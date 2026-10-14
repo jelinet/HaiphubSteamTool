@@ -1828,14 +1828,162 @@ namespace Hooks_NetPacket_LegacyKey {
 //  Dispatch
 // ════════════════════════════════════════════════════════════════
 
-// 前向声明（2026-10-15）：Hooks_NetPacket_CDKey 的实现在文件末尾，
-// 但下面的分发函数要先调用它；不声明会报 C2653 / C3861。签名需与定义保持一致。
 namespace Hooks_NetPacket_CDKey {
+
+    struct Pending {
+        uint64      jobId;          // 发送包 header 的 jobid_source，用来和响应对上
+        int32       eresult;        // 你的接口返回的 eresult，要写回响应 header
+        int32       detail;         // 你的接口返回的 purchase_result_details，要写回响应 body
+        std::string errorMessage;   // 你的接口返回的 error_message，要写回响应 header
+    };
+
+
+    std::deque<Pending> g_Pending;
+    // 保护 g_Pending。发送和接收理论上都在网络线程，加锁是为了保险。
+    std::mutex g_Mutex;
+    constexpr size_t kMaxPending = 16;
+
+    // Steam 的无效 job id（k_GIDNil），也是 proto 里的默认值。
+    constexpr uint64 kInvalidJobId = ~0ull;
+
+    // 0 和 ~0 都当作"没有 job id"。
+    inline bool IsValidJobId(uint64 id) { return id != 0 && id != kInvalidJobId; }
+
+    constexpr const char* kDecoyKey = "00000-00000-00000";
+
+
     bool HandleSend(const uint8* pBody, uint32 cbBody,
-                    const uint8* pHdr, uint32 cbHdr);
+                    const uint8* pHdr, uint32 cbHdr)
+    {
+        // 步骤 1：解析请求 body，取 key
+        CStore_RegisterCDKey_Request req;
+        LOG_REGISTERCDKEY_DEBUG("CDKey send: parsing CStore_RegisterCDKey_Request...");
+        if (!req.ParseFromArray(pBody, cbBody) || !req.has_activation_code()) {
+            LOG_REGISTERCDKEY_DEBUG("CDKey send: failed to parse CStore_RegisterCDKey_Request");
+            g_SuppressSend = true;
+            return false;
+        }
+
+        // 步骤 2：解析 header，取 jobid_source 和 steamid
+        CMsgProtoBufHeader hdr;
+        uint64 jobId = kInvalidJobId, steamId = 0;
+        if (hdr.ParseFromArray(pHdr, cbHdr)) {
+            jobId   = hdr.jobid_source();
+            steamId = hdr.steamid();
+        }
+
+        // 步骤 3：写日志
+        const std::string key = req.activation_code();
+        LOG_REGISTERCDKEY_DEBUG("CDKey send: key={} jobid={}", CDKeyReporter::MaskKey(key), jobId);
+
+        // 步骤 4：没配 cdkey.base_url 就跳过校验并放行：返回 false 且不设 g_SuppressSend，
+        // 原请求（真实 key）原样发给 Steam，也不会在 g_Pending 里留记录，HandleRecv 照常透传。
+        // 2026-10-13 和使用者确认；每次现取，toml 热加载后下一次激活就生效。
+        if (Config::GetCdkeySettings().baseUrl.empty()) {
+            LOG_REGISTERCDKEY_DEBUG("CDKey send: cdkey.base_url not set, skip check and pass through");
+            return false;
+        }
+
+        // 步骤 5：同步校验
+        const CDKeyReporter::CheckResponse check = CDKeyReporter::CheckBeforeActivate(key, steamId);
+
+        // 记录文件
+        if (check.eresult == 1)
+            CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.extras);
+
+        // 步骤 6：记下接口的结果
+        {
+            std::lock_guard<std::mutex> lock(g_Mutex);
+            g_Pending.push_back({jobId, check.eresult, check.detail, check.errorMessage});
+            while (g_Pending.size() > kMaxPending) g_Pending.pop_front();
+        }
+
+        req.set_activation_code(kDecoyKey);
+        g_cbSendNewBody = static_cast<uint32>(req.ByteSizeLong());
+        if (g_cbSendNewBody > kMaxBodySize || !req.SerializeToArray(g_SendNewBody, kMaxBodySize)) {
+            LOG_REGISTERCDKEY_DEBUG("CDKey send: failed to encode decoy request, suppress");
+            {
+                std::lock_guard<std::mutex> lock(g_Mutex);
+                if (!g_Pending.empty()) g_Pending.pop_back();
+            }
+            g_SuppressSend = true;
+            return false;
+        }
+        LOG_REGISTERCDKEY_DEBUG("CDKey send: key={} -> decoy, eresult={} detail={}",
+                                CDKeyReporter::MaskKey(key), check.eresult, check.detail);
+        return true;
+    }
+
+
     void HandleRecv(const uint8* pBody, uint32 cbBody,
-                    const uint8* pHdr, uint32 cbHdr);
-}
+                    const uint8* pHdr, uint32 cbHdr)
+    {
+        LOG_REGISTERCDKEY_DEBUG("CDKey recv: parsing response...");
+        // 步骤 1：解析 header 和 body
+        CMsgProtoBufHeader hdr;
+        CStore_RegisterCDKey_Response resp;
+        LOG_REGISTERCDKEY_DEBUG("CDKey recv: header size={} body size={}", cbHdr, cbBody);
+        if (!hdr.ParseFromArray(pHdr, cbHdr) || !resp.ParseFromArray(pBody, cbBody)) {
+            LOG_REGISTERCDKEY_DEBUG("CDKey recv: failed to parse response, pass through");
+            return;
+        }
+        const uint64 jobId = hdr.jobid_target();
+        LOG_REGISTERCDKEY_DEBUG("CDKey recv: jobid={}", jobId);
+        // 步骤 2：找到对应的请求并移出队列（花括号限定锁的范围）
+        Pending pending;
+        {
+            std::lock_guard<std::mutex> lock(g_Mutex);
+            auto it = g_Pending.end();
+            if (IsValidJobId(jobId)) {
+                // 优先用 jobid_target 精确匹配对应的请求。
+                for (auto i = g_Pending.begin(); i != g_Pending.end(); ++i)
+                    if (i->jobId == jobId) 
+                    {
+                        LOG_REGISTERCDKEY_DEBUG("CDKey recv: found pending request for jobid={}", jobId);
+                        it = i; break; 
+                    }
+            } else if (!g_Pending.empty()) {
+                // 响应没带 job id 时，按发送顺序取最早的一个。
+                it = g_Pending.begin();
+                LOG_REGISTERCDKEY_DEBUG("CDKey recv: no jobid in response, using first pending request for jobid={}", it->jobId);
+            }
+            if (it == g_Pending.end()) {
+                LOG_REGISTERCDKEY_DEBUG("CDKey recv: no pending request for jobid={}", jobId);
+                return;
+            }
+            pending = std::move(*it);
+            g_Pending.erase(it);
+        }
+
+        LOG_REGISTERCDKEY_DEBUG("CDKey recv: steam eresult={} detail={} -> replace with eresult={} detail={}",
+                                hdr.eresult(), resp.purchase_result_details(),
+                                pending.eresult, pending.detail);
+
+        // 步骤 3：改 header 和 body
+        hdr.set_eresult(pending.eresult);
+        if (pending.errorMessage.empty()) hdr.clear_error_message();
+        else                              hdr.set_error_message(pending.errorMessage);
+        resp.Clear();
+        resp.set_purchase_result_details(pending.detail);
+
+        // 步骤 4：序列化，都成功才设置替换标志
+        const uint32 cbNewHdr  = static_cast<uint32>(hdr.ByteSizeLong());
+        const uint32 cbNewBody = static_cast<uint32>(resp.ByteSizeLong());
+        if (cbNewHdr > kMaxHdrSize || cbNewBody > kMaxBodySize ||
+            !hdr.SerializeToArray(g_NewHdr, kMaxHdrSize) ||
+            !resp.SerializeToArray(g_NewBody, kMaxBodySize)) {
+            LOG_REGISTERCDKEY_DEBUG("CDKey recv: failed to encode replacement, pass through");
+            return;
+        }
+        g_cbNewHdr  = cbNewHdr;
+        g_cbNewBody = cbNewBody;
+        g_NeedReplaceHdr  = true;
+        g_NeedReplaceBody = true;
+        LOG_REGISTERCDKEY_DEBUG("CDKey recv: replacement encoded, will replace header and body");
+
+    }
+} // namespace Hooks_NetPacket_CDKey
+
 
 namespace {
 
@@ -2180,159 +2328,3 @@ namespace Hooks_NetPacket {
         return true;
     }
 }
-
-namespace Hooks_NetPacket_CDKey {
-
-    struct Pending {
-        uint64      jobId;          // 发送包 header 的 jobid_source，用来和响应对上
-        int32       eresult;        // 你的接口返回的 eresult，要写回响应 header
-        int32       detail;         // 你的接口返回的 purchase_result_details，要写回响应 body
-        std::string errorMessage;   // 你的接口返回的 error_message，要写回响应 header
-    };
-
-
-    std::deque<Pending> g_Pending;
-    // 保护 g_Pending。发送和接收理论上都在网络线程，加锁是为了保险。
-    std::mutex g_Mutex;
-    constexpr size_t kMaxPending = 16;
-
-    // Steam 的无效 job id（k_GIDNil），也是 proto 里的默认值。
-    constexpr uint64 kInvalidJobId = ~0ull;
-
-    // 0 和 ~0 都当作"没有 job id"。
-    inline bool IsValidJobId(uint64 id) { return id != 0 && id != kInvalidJobId; }
-
-    constexpr const char* kDecoyKey = "00000-00000-00000";
-
-
-    bool HandleSend(const uint8* pBody, uint32 cbBody,
-                    const uint8* pHdr, uint32 cbHdr)
-    {
-        // 步骤 1：解析请求 body，取 key
-        CStore_RegisterCDKey_Request req;
-        LOG_REGISTERCDKEY_DEBUG("CDKey send: parsing CStore_RegisterCDKey_Request...");
-        if (!req.ParseFromArray(pBody, cbBody) || !req.has_activation_code()) {
-            LOG_REGISTERCDKEY_DEBUG("CDKey send: failed to parse CStore_RegisterCDKey_Request");
-            g_SuppressSend = true;
-            return false;
-        }
-
-        // 步骤 2：解析 header，取 jobid_source 和 steamid
-        CMsgProtoBufHeader hdr;
-        uint64 jobId = kInvalidJobId, steamId = 0;
-        if (hdr.ParseFromArray(pHdr, cbHdr)) {
-            jobId   = hdr.jobid_source();
-            steamId = hdr.steamid();
-        }
-
-        // 步骤 3：写日志
-        const std::string key = req.activation_code();
-        LOG_REGISTERCDKEY_DEBUG("CDKey send: key={} jobid={}", CDKeyReporter::MaskKey(key), jobId);
-
-        // 步骤 4：没配 cdkey.base_url 就跳过校验并放行：返回 false 且不设 g_SuppressSend，
-        // 原请求（真实 key）原样发给 Steam，也不会在 g_Pending 里留记录，HandleRecv 照常透传。
-        // 2026-10-13 和使用者确认；每次现取，toml 热加载后下一次激活就生效。
-        if (Config::GetCdkeySettings().baseUrl.empty()) {
-            LOG_REGISTERCDKEY_DEBUG("CDKey send: cdkey.base_url not set, skip check and pass through");
-            return false;
-        }
-
-        // 步骤 5：同步校验
-        const CDKeyReporter::CheckResponse check = CDKeyReporter::CheckBeforeActivate(key, steamId);
-
-        // 记录文件
-        if (check.eresult == 1)
-            CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.extras);
-
-        // 步骤 6：记下接口的结果
-        {
-            std::lock_guard<std::mutex> lock(g_Mutex);
-            g_Pending.push_back({jobId, check.eresult, check.detail, check.errorMessage});
-            while (g_Pending.size() > kMaxPending) g_Pending.pop_front();
-        }
-
-        req.set_activation_code(kDecoyKey);
-        g_cbSendNewBody = static_cast<uint32>(req.ByteSizeLong());
-        if (g_cbSendNewBody > kMaxBodySize || !req.SerializeToArray(g_SendNewBody, kMaxBodySize)) {
-            LOG_REGISTERCDKEY_DEBUG("CDKey send: failed to encode decoy request, suppress");
-            {
-                std::lock_guard<std::mutex> lock(g_Mutex);
-                if (!g_Pending.empty()) g_Pending.pop_back();
-            }
-            g_SuppressSend = true;
-            return false;
-        }
-        LOG_REGISTERCDKEY_DEBUG("CDKey send: key={} -> decoy, eresult={} detail={}",
-                                CDKeyReporter::MaskKey(key), check.eresult, check.detail);
-        return true;
-    }
-
-
-    void HandleRecv(const uint8* pBody, uint32 cbBody,
-                    const uint8* pHdr, uint32 cbHdr)
-    {
-        LOG_REGISTERCDKEY_DEBUG("CDKey recv: parsing response...");
-        // 步骤 1：解析 header 和 body
-        CMsgProtoBufHeader hdr;
-        CStore_RegisterCDKey_Response resp;
-        LOG_REGISTERCDKEY_DEBUG("CDKey recv: header size={} body size={}", cbHdr, cbBody);
-        if (!hdr.ParseFromArray(pHdr, cbHdr) || !resp.ParseFromArray(pBody, cbBody)) {
-            LOG_REGISTERCDKEY_DEBUG("CDKey recv: failed to parse response, pass through");
-            return;
-        }
-        const uint64 jobId = hdr.jobid_target();
-        LOG_REGISTERCDKEY_DEBUG("CDKey recv: jobid={}", jobId);
-        // 步骤 2：找到对应的请求并移出队列（花括号限定锁的范围）
-        Pending pending;
-        {
-            std::lock_guard<std::mutex> lock(g_Mutex);
-            auto it = g_Pending.end();
-            if (IsValidJobId(jobId)) {
-                // 优先用 jobid_target 精确匹配对应的请求。
-                for (auto i = g_Pending.begin(); i != g_Pending.end(); ++i)
-                    if (i->jobId == jobId) 
-                    {
-                        LOG_REGISTERCDKEY_DEBUG("CDKey recv: found pending request for jobid={}", jobId);
-                        it = i; break; 
-                    }
-            } else if (!g_Pending.empty()) {
-                // 响应没带 job id 时，按发送顺序取最早的一个。
-                it = g_Pending.begin();
-                LOG_REGISTERCDKEY_DEBUG("CDKey recv: no jobid in response, using first pending request for jobid={}", it->jobId);
-            }
-            if (it == g_Pending.end()) {
-                LOG_REGISTERCDKEY_DEBUG("CDKey recv: no pending request for jobid={}", jobId);
-                return;
-            }
-            pending = std::move(*it);
-            g_Pending.erase(it);
-        }
-
-        LOG_REGISTERCDKEY_DEBUG("CDKey recv: steam eresult={} detail={} -> replace with eresult={} detail={}",
-                                hdr.eresult(), resp.purchase_result_details(),
-                                pending.eresult, pending.detail);
-
-        // 步骤 3：改 header 和 body
-        hdr.set_eresult(pending.eresult);
-        if (pending.errorMessage.empty()) hdr.clear_error_message();
-        else                              hdr.set_error_message(pending.errorMessage);
-        resp.Clear();
-        resp.set_purchase_result_details(pending.detail);
-
-        // 步骤 4：序列化，都成功才设置替换标志
-        const uint32 cbNewHdr  = static_cast<uint32>(hdr.ByteSizeLong());
-        const uint32 cbNewBody = static_cast<uint32>(resp.ByteSizeLong());
-        if (cbNewHdr > kMaxHdrSize || cbNewBody > kMaxBodySize ||
-            !hdr.SerializeToArray(g_NewHdr, kMaxHdrSize) ||
-            !resp.SerializeToArray(g_NewBody, kMaxBodySize)) {
-            LOG_REGISTERCDKEY_DEBUG("CDKey recv: failed to encode replacement, pass through");
-            return;
-        }
-        g_cbNewHdr  = cbNewHdr;
-        g_cbNewBody = cbNewBody;
-        g_NeedReplaceHdr  = true;
-        g_NeedReplaceBody = true;
-        LOG_REGISTERCDKEY_DEBUG("CDKey recv: replacement encoded, will replace header and body");
-
-    }
-} // namespace Hooks_NetPacket_CDKey

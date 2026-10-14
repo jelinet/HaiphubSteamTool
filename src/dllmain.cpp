@@ -111,23 +111,24 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     // not be replaceable by flipping [update] in opensteamtool.toml, and with the
     // updater absent the DLL makes no update request at all.
 #ifdef OST_ENABLE_UPDATER
-    if (Config::GetUpdateEnabled()) {
-        OSTPlatform::Thread::StartDetached([] () -> uint32_t {
-            const std::string self = std::string(SteamInstallPath) + "\\OpenSteamTool.dll";
-            AppUpdater::CleanupStagedBackup(self);
+    // if (Config::GetUpdateEnabled()) {
+    //     OSTPlatform::Thread::StartDetached([] () -> uint32_t {
+    //         const std::string self = std::string(SteamInstallPath) + "\\OpenSteamTool.dll";
+    //         AppUpdater::CleanupStagedBackup(self);
 
-            const AppUpdater::CheckResult upd = AppUpdater::Check();
-            if (!upd.updateAvailable) return 0;
-            if (!AppUpdater::DownloadAndStage(upd, self)) return 0;
+    //         const AppUpdater::CheckResult upd = AppUpdater::Check();
+    //         if (!upd.updateAvailable) return 0;
+    //         if (!AppUpdater::DownloadAndStage(upd, self)) return 0;
 
-            const bool restart = OSTPlatform::Dialog::ShowConfirm(
-                "BetterSteamTools Updated!",
-                upd.oldVersion + " -> " + upd.newVersion +
-                "\n\nRestart Steam now to apply?");
-            if (restart) AppUpdater::RestartSteam();
-            return 0;
-        });
-    }
+    //         const bool restart = OSTPlatform::Dialog::ShowConfirm(
+    //             "BetterSteamTools Updated!",
+    //             upd.oldVersion + " -> " + upd.newVersion +
+    //             "\n\nRestart Steam now to apply?");
+    //         if (restart) AppUpdater::RestartSteam();
+    //         return 0;
+    //     });
+    // }
+    LOG_INFO("Self-updater not compiled in (OST_ENABLE_UPDATER=ON),but I closed it");
 #else
     LOG_INFO("Self-updater not compiled in (OST_ENABLE_UPDATER=OFF)");
 #endif
