@@ -2,6 +2,7 @@
 #include "Utils/SteamMetadata/ManifestClient.h"
 #include "Utils/SteamMetadata/ManifestDonor.h"
 #include "Utils/SteamMetadata/ManifestCache.h"
+#include "Utils/SteamMetadata/CDKeyReporter.h"
 #include "Utils/Config/Config.h"
 #include "OSTPlatform/include/Thread.h"
 #include "Hooks_Misc.h"
@@ -1826,6 +1827,16 @@ namespace Hooks_NetPacket_LegacyKey {
 // ════════════════════════════════════════════════════════════════
 //  Dispatch
 // ════════════════════════════════════════════════════════════════
+
+// 前向声明（2026-10-15）：Hooks_NetPacket_CDKey 的实现在文件末尾，
+// 但下面的分发函数要先调用它；不声明会报 C2653 / C3861。签名需与定义保持一致。
+namespace Hooks_NetPacket_CDKey {
+    bool HandleSend(const uint8* pBody, uint32 cbBody,
+                    const uint8* pHdr, uint32 cbHdr);
+    void HandleRecv(const uint8* pBody, uint32 cbBody,
+                    const uint8* pHdr, uint32 cbHdr);
+}
+
 namespace {
 
     bool SendServiceJob(const char* targetJobName,
