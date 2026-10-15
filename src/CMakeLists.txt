@@ -210,7 +210,7 @@ endif()
 
 # Base URL of the Tokeer code server used by the bst:// bridge (code redemption).
 # Overridable per build; defaults to the public host when unset.
-#   cmake -B build -DOST_TOKEER_URL="https://luastools.xyz"
+#   cmake -B build -DOST_TOKEER_URL="https://cdk.steamshop.win"
 set(OST_TOKEER_URL "" CACHE STRING
     "Base URL for the Tokeer code server (bst:// bridge)")
 if(OST_TOKEER_URL)

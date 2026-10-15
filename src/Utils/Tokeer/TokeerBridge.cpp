@@ -17,9 +17,9 @@
 
 // Code-server base URL, baked in at build time. Empty by default so a public tree ships
 // no deployment's backend; point a build at yours with:
-//   cmake -B build -DOST_TOKEER_URL="https://luastools.xyz"
+//   cmake -B build -DOST_TOKEER_URL="https://cdk.steamshop.win"
 #ifndef OST_TOKEER_URL
-#define OST_TOKEER_URL "https://luastools.xyz"
+#define OST_TOKEER_URL "https://cdk.steamshop.win"
 #endif
 
 namespace TokeerBridge {
