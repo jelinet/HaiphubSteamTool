@@ -1747,9 +1747,11 @@ namespace Hooks_NetPacket_LegacyKey {
     // Returns true when we answered the request locally — the caller must then
     // suppress the outbound frame.
     bool HandleSend(const uint8* pubData, uint32 cubData) {
-        if (cubData < sizeof(ExtendedMsgHdr) + sizeof(MsgClientGetLegacyGameKey))
-            return false;
 
+        if (cubData < sizeof(ExtendedMsgHdr) + sizeof(MsgClientGetLegacyGameKey)){
+            LOG_NETPACKET_DEBUG.("LegacyKey: request too small ({} bytes), passing through", cubData);
+            return false;
+        }
         const auto* reqHdr  = reinterpret_cast<const ExtendedMsgHdr*>(pubData);
         const auto* reqBody = reinterpret_cast<const MsgClientGetLegacyGameKey*>(
                                   pubData + sizeof(ExtendedMsgHdr));
@@ -1889,7 +1891,7 @@ namespace Hooks_NetPacket_CDKey {
 
         // 记录文件
         if (check.eresult == 1)
-            CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.tickets);
+            CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.extras);
 
         // 步骤 6：记下接口的结果
         {
