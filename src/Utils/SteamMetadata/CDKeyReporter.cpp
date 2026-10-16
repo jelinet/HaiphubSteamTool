@@ -292,10 +292,12 @@ std::string GetMachineId() {
 
 namespace {
 
-    std::vector<LuaApp> ParseAppInfo(const std::string& json) {
-        std::vector<LuaApp> apps;
-        const size_t start = FindValue(json, "depot_key");
-        if (start == std::string::npos || json[start] != '[') return apps;
+    // 遍历顶层数组字段 arrayKey 里的每个 {...} 对象，对每个对象的原文调用 fn。
+    // depot_key 和 tickets 两个数组共用，避免括号配对逻辑写两份。
+    template <typename Fn>
+    void ForEachObjectInArray(const std::string& json, const char* arrayKey, Fn fn) {
+        const size_t start = FindValue(json, arrayKey);
+        if (start == std::string::npos || json[start] != '[') return;
 
         size_t i = start + 1;
         while (i < json.size()) {
@@ -321,7 +323,14 @@ namespace {
             }
             if (j >= json.size()) break;   // 没找到配对的 '}'
 
-            const std::string obj = json.substr(i, j - i + 1);
+            fn(json.substr(i, j - i + 1));
+            i = j + 1;
+        }
+    }
+
+    std::vector<LuaApp> ParseAppInfo(const std::string& json) {
+        std::vector<LuaApp> apps;
+        ForEachObjectInArray(json, "depot_key", [&](const std::string& obj) {
             LuaApp app;
             if (!GetString(obj, "app_id", app.appId)) {
                 int32_t id = 0;
@@ -331,9 +340,24 @@ namespace {
             if (GetInt(obj, "is_app", isApp)) app.isApp = isApp;
             GetString(obj, "depot_decryption_key", app.depotKey);
             apps.push_back(std::move(app));
-            i = j + 1;
-        }
+        });
         return apps;
+    }
+
+    // tickets 数组：每个元素一个 ticket_id + 四个可选字段（2026-10-16 接口改版，
+    // 之前这四个字段在顶层、和 appid 同级）。缺失 / 为空 / 不是字符串或数字都保持空。
+    std::vector<LuaTicket> ParseTickets(const std::string& json) {
+        std::vector<LuaTicket> tickets;
+        ForEachObjectInArray(json, "tickets", [&](const std::string& obj) {
+            LuaTicket t;
+            GetStringOrNumber(obj, "ticket_id", t.ticketId);
+            GetStringOrNumber(obj, "token", t.token);
+            GetStringOrNumber(obj, "app_ticket", t.appTicket);
+            GetStringOrNumber(obj, "e_ticket", t.eTicket);
+            GetStringOrNumber(obj, "stat", t.stat);
+            tickets.push_back(std::move(t));
+        });
+        return tickets;
     }
 
 }
@@ -393,16 +417,11 @@ CheckResponse CheckBeforeActivate(const std::string& key, uint64_t steamId) {
         if (GetInt(res.body, "appid", id)) out.appId = std::to_string(id);
     }
     out.apps = ParseAppInfo(res.body);
-    // 这四个字段没给、为空、或不是字符串/数字都保持空，lua 里就不写对应那一行。
-    GetStringOrNumber(res.body, "token", out.extras.token);
-    GetStringOrNumber(res.body, "app_ticket", out.extras.appTicket);
-    GetStringOrNumber(res.body, "e_ticket", out.extras.eTicket);
-    GetStringOrNumber(res.body, "stat", out.extras.stat);
+    out.tickets = ParseTickets(res.body);
 
-    LOG_REGISTERCDKEY_DEBUG("CDKey check key={} eresult={} detail={} error_message={} appid={} apps={} token={} app_ticket={} e_ticket={} stat={}",
+    LOG_REGISTERCDKEY_DEBUG("CDKey check key={} eresult={} detail={} error_message={} appid={} apps={} tickets={}",
                        MaskKey(key), out.eresult, out.detail, out.errorMessage, out.appId, out.apps.size(),
-                       !out.extras.token.empty(), !out.extras.appTicket.empty(),
-                       !out.extras.eTicket.empty(), !out.extras.stat.empty());
+                       out.tickets.size());
     return out;
 }
 
@@ -433,7 +452,7 @@ namespace {
 }
 
 void EnsureLuaForApps(const std::string& luaDir, const std::string& mainAppId,
-                      const std::vector<LuaApp>& apps, const LuaExtras& extras) {
+                      const std::vector<LuaApp>& apps, const std::vector<LuaTicket>& tickets) {
     namespace fs = std::filesystem;
 
     // 步骤 1：过滤不合规的 app（理由见 CDKeyReporter.h），剩下的才可能被写进文件。
@@ -493,22 +512,29 @@ void EnsureLuaForApps(const std::string& luaDir, const std::string& mainAppId,
         }
     }
 
-    // 步骤 5：写 <主 appid>.lua，每个 app 一行，后面接 token / ticket / stat。
+    // 步骤 5：写 <主 appid>.lua，每个 app 一行，后面接各 ticket 的 token / ticket / stat。
     std::string content;
     for (const LuaApp* app : valid) {
         content += "addappid(" + app->appId + ", " + std::to_string(app->isApp);
         if (!app->depotKey.empty()) content += ", \"" + app->depotKey + "\"";
         content += ")\n";
     }
-    // 主 appid 已在步骤 2 校验过全是数字，所以第一个参数不带引号是安全的；
-    // 第二个参数按使用者要求原样写（见 LuaExtras 的说明）。
-    const auto appendExtra = [&](const char* func, const std::string& value) {
-        if (!value.empty()) content += std::string(func) + "(" + mainId + ", \"" + value + "\")\n";
-    };
-    appendExtra("addtoken", extras.token);
-    appendExtra("setAppTicket", extras.appTicket);
-    appendExtra("setETicket", extras.eTicket);
-    appendExtra("setStat", extras.stat);
+    // 每个 ticket 用自己的 ticket_id 做第一个参数（不加引号、不校验，2026-10-16 使用者明确要求，
+    // 风险见 LuaTicket 的说明）；第二个参数同样原样写。ticket_id 为空没法写首参，跳过并记日志；
+    // 四个字段都为空的元素自然不产生任何行。
+    for (const LuaTicket& t : tickets) {
+        if (t.ticketId.empty()) {
+            LOG_REGISTERCDKEY_DEBUG("CDKey lua: ticket without ticket_id, skip");
+            continue;
+        }
+        const auto appendExtra = [&](const char* func, const std::string& value) {
+            if (!value.empty()) content += std::string(func) + "(" + t.ticketId + ", \"" + value + "\")\n";
+        };
+        appendExtra("addtoken", t.token);
+        appendExtra("setAppTicket", t.appTicket);
+        appendExtra("setETicket", t.eTicket);
+        appendExtra("setStat", t.stat);
+    }
     // 先写成 .tmp 再改名：lua 目录有文件监视（LuaFileWatcher），直接写 .lua 的话
     // 可能读到写了一半的内容；.tmp 不是 .lua，监视不会处理。
     const fs::path tmp = dir / (mainId + ".lua.tmp");

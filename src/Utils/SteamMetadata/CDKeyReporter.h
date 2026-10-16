@@ -65,15 +65,19 @@ namespace CDKeyReporter {
         std::string depotKey;    // depot_decryption_key（十六进制）；没给就不写第三个参数
     };
 
-    // 接口顶层返回的 token / app_ticket / e_ticket / stat（和 appid 同级），
-    // 非空的写进 <appid>.lua 的 addtoken / setAppTicket / setETicket / setStat（2026-10-13 和使用者确认）。
-    // 值原样写进 Lua 字符串，不做校验也不转义（使用者明确要求）：接口返回的值里如果带 " 或换行，
-    // 生成的 lua 会语法错误，甚至被注入代码，所以接口必须自己保证值干净、且来源可信。
-    struct LuaExtras {
-        std::string token;       // → addtoken(<appid>, "<token>")
-        std::string appTicket;   // → setAppTicket(<appid>, "<app_ticket>")
-        std::string eTicket;     // → setETicket(<appid>, "<e_ticket>")
-        std::string stat;        // → setStat(<appid>, "<stat>")
+    // 接口返回的 tickets 数组里的一项（2026-10-16 接口改版：之前 token / app_ticket / e_ticket / stat
+    // 在顶层、和 appid 同级，现在每个 ticket 带自己的 ticket_id）。
+    //   "tickets":[{"ticket_id":"4001890","token":"","app_ticket":"..","e_ticket":"..","stat":".."}, …]
+    // 非空的字段写进 <appid>.lua，ticket_id 做第一个参数。
+    // ticket_id 不加引号、不校验，其余值原样写进 Lua 字符串且不转义（使用者明确要求）：
+    // ticket_id 必须是纯数字；其余值里如果带 " 或换行，生成的 lua 会语法错误，甚至被注入代码，
+    // 所以接口必须自己保证值干净、且来源可信。
+    struct LuaTicket {
+        std::string ticketId;    // → 下面四个函数的第一个参数
+        std::string token;       // → addtoken(<ticket_id>, "<token>")
+        std::string appTicket;   // → setAppTicket(<ticket_id>, "<app_ticket>")
+        std::string eTicket;     // → setETicket(<ticket_id>, "<e_ticket>")
+        std::string stat;        // → setStat(<ticket_id>, "<stat>")
     };
 
     struct CheckResponse {
@@ -84,7 +88,7 @@ namespace CDKeyReporter {
         std::string errorMessage;        // 接口返回的 error_message（写进响应 header）
         std::string appId;               // 接口返回的顶层 appid：lua 文件名，也用来判断是否已存在
         std::vector<LuaApp> apps;        // 接口返回的 app_info：lua 文件里每个 app 一行
-        LuaExtras   extras;              // 接口返回的 token / app_ticket / e_ticket / stat
+        std::vector<LuaTicket> tickets;  // 接口返回的 tickets 数组
         std::string rawBody;             // 接口返回的原始 body，方便排查
     };
 
@@ -101,8 +105,9 @@ namespace CDKeyReporter {
     // 写入内容是 apps 里每个 app 一行：
     //   有 depotKey：addappid(<app_id>, <is_app>, "<depotKey>")
     //   没有       ：addappid(<app_id>, <is_app>)
-    // 之后按 extras 里非空的字段各追加一行（第一个参数是主 appid，不带引号；第二个参数带引号）：
-    //   addtoken(<mainAppId>, "<token>")  setAppTicket(...)  setETicket(...)  setStat(...)
+    // 之后对 tickets 里每个元素，按非空字段各追加一行（第一个参数是该元素的 ticket_id，不带引号；
+    // 第二个参数带引号；ticket_id 为空的元素跳过）：
+    //   addtoken(<ticket_id>, "<token>")  setAppTicket(...)  setETicket(...)  setStat(...)
     // 这几行和 addappid 在同一个文件里，所以"别的 .lua 里已出现主 appid 就什么都不做"时它们也不写
     // （2026-10-13 和使用者确认保持）。
     // mainAppId 为空（接口没给顶层 appid）时退回用 apps 里第一个合规的 app_id。
@@ -111,7 +116,7 @@ namespace CDKeyReporter {
     // （防止接口返回 "../x" 变成路径穿越，或返回带引号的内容变成 Lua 代码注入）。
     // 失败只写日志，不影响激活流程。
     void EnsureLuaForApps(const std::string& luaDir, const std::string& mainAppId,
-                          const std::vector<LuaApp>& apps, const LuaExtras& extras);
+                          const std::vector<LuaApp>& apps, const std::vector<LuaTicket>& tickets);
 
     // 本机机器码：读注册表 HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid
     // （Windows 安装时生成，重装系统会变）。读不到时返回空字符串。
