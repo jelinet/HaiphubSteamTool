@@ -2242,7 +2242,7 @@ namespace Hooks_NetPacket_CDKey {
 
         // 记录文件
         if (check.eresult == 1)
-            CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.extras);
+            CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.tickets);
 
         // 步骤 6：记下接口的结果
         {
