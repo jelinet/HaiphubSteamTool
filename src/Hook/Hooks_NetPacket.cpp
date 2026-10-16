@@ -1749,7 +1749,7 @@ namespace Hooks_NetPacket_LegacyKey {
     bool HandleSend(const uint8* pubData, uint32 cubData) {
 
         if (cubData < sizeof(ExtendedMsgHdr) + sizeof(MsgClientGetLegacyGameKey)){
-            LOG_NETPACKET_DEBUG.("LegacyKey: request too small ({} bytes), passing through", cubData);
+            LOG_NETPACKET_DEBUG("LegacyKey: request too small ({} bytes), passing through", cubData);
             return false;
         }
         const auto* reqHdr  = reinterpret_cast<const ExtendedMsgHdr*>(pubData);
@@ -1891,7 +1891,7 @@ namespace Hooks_NetPacket_CDKey {
 
         // 记录文件
         if (check.eresult == 1)
-            CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.extras);
+            CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.tickets);
 
         // 步骤 6：记下接口的结果
         {
