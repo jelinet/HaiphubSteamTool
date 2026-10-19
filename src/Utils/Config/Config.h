@@ -31,7 +31,7 @@ namespace Config {
         std::string library;
     };
     
-    // baseUrl / authToken 来自注册表 HKCU\Software\OpenSteamTool\CDKey（见 Config.cpp 的 ReadCdkeyRegistry），
+    // baseUrl / authToken 来自注册表 HKLM\SOFTWARE\OpenSteamTool\CDKey（见 Config.cpp 的 ReadCdkeyRegistry），
     // timeoutMs 来自 toml [cdkey]。
     struct CdkeySettings {
         std::string baseUrl;            

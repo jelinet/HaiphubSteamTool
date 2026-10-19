@@ -84,13 +84,15 @@ namespace {
         }
     }
 
-    constexpr wchar_t kCdkeyRegistryKey[] = L"Software\\OpenSteamTool\\CDKey";
+    constexpr wchar_t kCdkeyRegistryKey[] = L"SOFTWARE\\OpenSteamTool\\CDKey";
 
-    // 读 HKCU\<kCdkeyRegistryKey> 下的一个 REG_SZ。值不存在、为空、类型不对都返回空字符串。
+    // 读 HKLM\<kCdkeyRegistryKey> 下的一个 REG_SZ。值不存在、为空、类型不对都返回空字符串。
+    // RRF_SUBKEY_WOW6464KEY：固定读 64 位视图，跟 64 位 PowerShell 写入的位置一致；
+    // 不加的话 32 位进程会被重定向到 WOW6432Node，读不到（同 CDKeyReporter.cpp 的 GetMachineId）。
     std::string ReadCdkeyRegistryString(const wchar_t* valueName) {
         DWORD bytes = 0;
-        LSTATUS status = RegGetValueW(HKEY_CURRENT_USER, kCdkeyRegistryKey, valueName,
-                                      RRF_RT_REG_SZ, nullptr, nullptr, &bytes);
+        LSTATUS status = RegGetValueW(HKEY_LOCAL_MACHINE, kCdkeyRegistryKey, valueName,
+                                      RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, nullptr, &bytes);
         if (status != ERROR_SUCCESS || bytes <= sizeof(wchar_t)) {
             if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND && status != ERROR_PATH_NOT_FOUND)
                 LOG_WARN("cdkey registry: failed to query {} ({})",
@@ -99,8 +101,8 @@ namespace {
         }
         // RegGetValueW 保证结尾有 '\0' 且算在 bytes 里，所以多分配不会截断。
         std::wstring buf(bytes / sizeof(wchar_t), L'\0');
-        status = RegGetValueW(HKEY_CURRENT_USER, kCdkeyRegistryKey, valueName,
-                              RRF_RT_REG_SZ, nullptr, buf.data(), &bytes);
+        status = RegGetValueW(HKEY_LOCAL_MACHINE, kCdkeyRegistryKey, valueName,
+                              RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, buf.data(), &bytes);
         if (status != ERROR_SUCCESS) {
             LOG_WARN("cdkey registry: failed to read {} ({})",
                      OSTPlatform::Encoding::WideToUtf8(valueName), static_cast<long>(status));
@@ -112,11 +114,13 @@ namespace {
 
     // base_url / auth_token 只从注册表读，不再放 toml（2026-10-19 和使用者确认）：
     // 换/覆盖 opensteamtool.toml 时 token 不会被冲掉，也不会随配置文件被复制走。
-    // 只读 HKCU（当前用户），不做 HKLM 兜底（2026-10-19 和使用者确认）——换了 Windows 账户运行 Steam 就要在那个账户下重新写。
+    // 只读 HKLM（整台机器共用），不读 HKCU（2026-10-19 和使用者确认）：
+    // 先做过只读 HKCU 的版本，但提权时换成别的管理员账户、或机器上有多个 Windows 账户时，值会写进别人的 HKCU、Steam 读不到。
+    // 代价是写入要管理员权限，所有账户都能读到同一个 token。
     // 每次 Load 都重读，但 Load 只在 toml 变化 / 启动时触发：只改注册表不会立即生效，要 touch 一下 toml 或重启 Steam。
-    // 写入示例：
-    //   reg add HKCU\Software\OpenSteamTool\CDKey /v BaseUrl   /t REG_SZ /d "https://xxx.workers.dev" /f
-    //   reg add HKCU\Software\OpenSteamTool\CDKey /v AuthToken /t REG_SZ /d "<token>" /f
+    // 写入示例（管理员 cmd；/reg:64 保证写 64 位视图）：
+    //   reg add HKLM\SOFTWARE\OpenSteamTool\CDKey /v BaseUrl   /t REG_SZ /d "https://xxx.workers.dev" /f /reg:64
+    //   reg add HKLM\SOFTWARE\OpenSteamTool\CDKey /v AuthToken /t REG_SZ /d "<token>" /f /reg:64
     void ReadCdkeyRegistry(CdkeySettings& cdkey) {
         std::string url = ReadCdkeyRegistryString(L"BaseUrl");
         // 去掉末尾 '/'，免得和 "/cdkeycheck" 拼出 "//cdkeycheck"。
@@ -290,7 +294,7 @@ namespace {
             if (auto cdkey = tbl["cdkey"].as_table()) {
                 // base_url / auth_token 已挪到注册表（见 ReadCdkeyRegistry），toml 里还写着就提醒删掉。
                 if (cdkey->contains("base_url") || cdkey->contains("auth_token"))
-                    LOG_WARN("cdkey.base_url/auth_token in toml are ignored, set them in registry HKCU\\Software\\OpenSteamTool\\CDKey");
+                    LOG_WARN("cdkey.base_url/auth_token in toml are ignored, set them in registry HKLM\\SOFTWARE\\OpenSteamTool\\CDKey");
                 if (auto val = (*cdkey)["timeout_ms"].value<int64_t>())
                     snapshot.cdkey.timeoutMs = static_cast<uint32_t>(*val);
             }
