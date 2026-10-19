@@ -31,9 +31,10 @@ namespace Config {
         std::string library;
     };
     
+    // baseUrl / authToken 来自注册表 HKCU\Software\OpenSteamTool\CDKey（见 Config.cpp 的 ReadCdkeyRegistry），
+    // timeoutMs 来自 toml [cdkey]。
     struct CdkeySettings {
         std::string baseUrl;            
-        bool        reportEnabled = false;
         std::string authToken;          
         uint32_t    timeoutMs = 2000;
     };
@@ -106,7 +107,6 @@ namespace Config {
 
     // [cdkey]
     inline std::string cdkeyBaseUrl;
-    inline bool        cdkeyReportEnabled = true;
     inline std::string cdkeyAuthToken;
     inline uint32_t    cdkeyTimeoutMs = 2000;
 

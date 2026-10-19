@@ -25,7 +25,6 @@ namespace {
 
 
     constexpr char kCheckPath[]  = "/cdkeycheck";
-    constexpr char kReportPath[] = "/cdkeyreport";
 
 
     std::wstring BuildHeaders(const std::string& authToken) {
@@ -38,15 +37,6 @@ namespace {
         return h;
     }
 
-
-    constexpr int32_t kDetailAlreadyPurchased        = 9;
-    constexpr int32_t kDetailRestrictedCountry       = 13;
-    constexpr int32_t kDetailBadActivationCode       = 14;
-    constexpr int32_t kDetailDuplicateActivationCode = 15;
-    constexpr int32_t kDetailDoesNotOwnRequiredApp   = 24;
-    constexpr int32_t kDetailRateLimited             = 53;
-
-    constexpr int32_t kEResultOK = 1;
 
     // 转义 JSON 字符串中的特殊字符。
     std::string JsonEscape(const std::string& s) {
@@ -68,35 +58,6 @@ namespace {
                     out += static_cast<char>(c);
                 }
             }
-        }
-        return out;
-    }
-
-    // 标准 base64 编码，用来把二进制原始字节放进 JSON。
-    std::string Base64(const std::string& in) {
-        static constexpr char kTable[] =
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        std::string out;
-        out.reserve((in.size() + 2) / 3 * 4);
-        size_t i = 0;
-        for (; i + 2 < in.size(); i += 3) {
-            const uint32_t v = (uint8_t(in[i]) << 16) | (uint8_t(in[i + 1]) << 8) | uint8_t(in[i + 2]);
-            out += kTable[(v >> 18) & 63];
-            out += kTable[(v >> 12) & 63];
-            out += kTable[(v >> 6) & 63];
-            out += kTable[v & 63];
-        }
-        if (i + 1 == in.size()) {
-            const uint32_t v = uint8_t(in[i]) << 16;
-            out += kTable[(v >> 18) & 63];
-            out += kTable[(v >> 12) & 63];
-            out += "==";
-        } else if (i + 2 == in.size()) {
-            const uint32_t v = (uint8_t(in[i]) << 16) | (uint8_t(in[i + 1]) << 8);
-            out += kTable[(v >> 18) & 63];
-            out += kTable[(v >> 12) & 63];
-            out += kTable[(v >> 6) & 63];
-            out += '=';
         }
         return out;
     }
@@ -178,93 +139,12 @@ namespace {
         return false;
     }
 
-    std::string BuildJson(const Report& r) {
-        std::string json = "{\"key\":\"" + JsonEscape(r.key) + "\"";
-        json += ",\"steamid\":\"" + std::to_string(r.steamId) + "\"";
-        json += ",\"eresult\":" + std::to_string(r.eresult);
-        json += ",\"detail\":" + std::to_string(r.detail);
-        json += ",\"status\":\"";
-        json += Status(r);
-        json += "\"";
-        json += ",\"steam_response\":{";
-        json += "\"header_eresult\":" + std::to_string(r.headerEresult);
-        json += ",\"header_error_message\":\"" + JsonEscape(r.headerErrorMessage) + "\"";
-        json += ",\"eresult\":" + std::to_string(r.eresult);
-        json += ",\"purchase_result_details\":" + std::to_string(r.detail);
-        json += ",\"purchase_receipt_info\":\"" + Base64(r.receiptInfo) + "\"";
-        json += ",\"raw_header\":\"" + Base64(r.rawHeader) + "\"";
-        json += ",\"raw_body\":\"" + Base64(r.rawBody) + "\"";
-        json += "}}";
-        return json;
-    }
-
 } // namespace
-
-const char* Status(const Report& r) {
-    if (r.eresult == kEResultOK) return "activated";   // 本次激活成功
-    switch (r.detail) {
-    case kDetailDuplicateActivationCode: return "used_by_other_account";
-    case kDetailAlreadyPurchased:        return "already_owned";
-    case kDetailBadActivationCode:       return "invalid_key";
-    case kDetailRestrictedCountry:       return "region_locked";
-    case kDetailDoesNotOwnRequiredApp:   return "requires_base_game";
-    case kDetailRateLimited:             return "rate_limited";
-    default:                             return "failed";
-    }
-}
 
 std::string MaskKey(const std::string& key) {
     constexpr size_t kVisible = 5;
     if (key.size() <= kVisible) return std::string(key.size(), '*');
     return std::string(key.size() - kVisible, '*') + key.substr(key.size() - kVisible);
-}
-
-ServerResponse SendReport(const Report& r) {
-    // 步骤 1：同步上报。在调用方线程（Steam 网络线程）里直接发请求，返回后才继续处理这个包。
-    const Config::CdkeySettings cfg = Config::GetCdkeySettings();
-    ServerResponse out;
-    if (cfg.baseUrl.empty() || !cfg.reportEnabled) {
-        // 没配域名（不保留默认地址，2026-10-13 和使用者确认）或 report_enabled=false 就不上报。
-        LOG_REGISTERCDKEY_DEBUG("CDKey report skipped key={}: {}", MaskKey(r.key),
-                                cfg.baseUrl.empty() ? "cdkey.base_url not set" : "cdkey.report_enabled=false");
-        return out;
-    }
-    const std::string reportUrl = cfg.baseUrl + kReportPath;
-    const std::string body = BuildJson(r);
-    const std::wstring headers = BuildHeaders(cfg.authToken);
-    auto res = OSTPlatform::Http::Execute(L"POST", reportUrl.c_str(),
-                                          body.data(), static_cast<uint32_t>(body.size()),
-                                          headers.c_str(),
-                                          cfg.timeoutMs, cfg.timeoutMs, cfg.timeoutMs, cfg.timeoutMs);
-
-    out.httpStatus = res.status;
-    out.httpOk     = res.ok && res.status >= 200 && res.status < 300;
-    out.rawBody    = res.body;
-
-    // 步骤 2：HTTP 失败（网络错误、超时、非 2xx）只写日志，不重试，不影响 Steam 的激活流程。
-    if (!out.httpOk) {
-        LOG_REGISTERCDKEY_DEBUG("CDKey report failed key={} status={} ok={} body={}",
-                           MaskKey(r.key), res.status, res.ok, res.body);
-        return out;
-    }
-
-    // 步骤 3：按 Steam 763 的字段解析接口返回的 JSON。
-    //   eresult 必须有，没有就当作格式不对；另外两个字段可选。
-    out.parsed = GetInt(res.body, "eresult", out.eresult);
-    if (!out.parsed) {
-        LOG_REGISTERCDKEY_DEBUG("CDKey report sent key={} but response has no eresult, body={}",
-                           MaskKey(r.key), res.body);
-        return out;
-    }
-    GetInt(res.body, "purchase_result_details", out.detail);
-    GetString(res.body, "error_message", out.errorMessage);
-
-    // 步骤 4：写日志。同时打出 Steam 的结果，方便对比两边是否一致。
-    LOG_REGISTERCDKEY_DEBUG("CDKey report sent key={} steam: eresult={} detail={} | "
-                       "server: eresult={} detail={} error_message={}",
-                       MaskKey(r.key), r.eresult, r.detail,
-                       out.eresult, out.detail, out.errorMessage);
-    return out;
 }
 
 std::string GetMachineId() {

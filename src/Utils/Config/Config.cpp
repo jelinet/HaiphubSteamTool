@@ -4,8 +4,19 @@
 
 #include <toml++/toml.hpp>
 
+#include "OSTPlatform/include/Encoding.h"
+
 #include <filesystem>
 #include <mutex>
+
+// 读 cdkey 的注册表配置用
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 namespace Config {
 namespace {
@@ -62,7 +73,6 @@ namespace {
         cloudEnabled           = snapshot.cloud.enabled;
         cloudLibrary           = snapshot.cloud.library;
         cdkeyBaseUrl           = snapshot.cdkey.baseUrl;
-        cdkeyReportEnabled     = snapshot.cdkey.reportEnabled;
         cdkeyAuthToken         = snapshot.cdkey.authToken;
         cdkeyTimeoutMs         = snapshot.cdkey.timeoutMs;
     }
@@ -72,6 +82,53 @@ namespace {
             LOG_WARN("Unknown manifest.url \"{}\", keeping default", provider);
             ManifestClient::SetProvider("opensteamtool");
         }
+    }
+
+    constexpr wchar_t kCdkeyRegistryKey[] = L"Software\\OpenSteamTool\\CDKey";
+
+    // 读 HKCU\<kCdkeyRegistryKey> 下的一个 REG_SZ。值不存在、为空、类型不对都返回空字符串。
+    std::string ReadCdkeyRegistryString(const wchar_t* valueName) {
+        DWORD bytes = 0;
+        LSTATUS status = RegGetValueW(HKEY_CURRENT_USER, kCdkeyRegistryKey, valueName,
+                                      RRF_RT_REG_SZ, nullptr, nullptr, &bytes);
+        if (status != ERROR_SUCCESS || bytes <= sizeof(wchar_t)) {
+            if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND && status != ERROR_PATH_NOT_FOUND)
+                LOG_WARN("cdkey registry: failed to query {} ({})",
+                         OSTPlatform::Encoding::WideToUtf8(valueName), static_cast<long>(status));
+            return std::string();
+        }
+        // RegGetValueW 保证结尾有 '\0' 且算在 bytes 里，所以多分配不会截断。
+        std::wstring buf(bytes / sizeof(wchar_t), L'\0');
+        status = RegGetValueW(HKEY_CURRENT_USER, kCdkeyRegistryKey, valueName,
+                              RRF_RT_REG_SZ, nullptr, buf.data(), &bytes);
+        if (status != ERROR_SUCCESS) {
+            LOG_WARN("cdkey registry: failed to read {} ({})",
+                     OSTPlatform::Encoding::WideToUtf8(valueName), static_cast<long>(status));
+            return std::string();
+        }
+        buf.resize(wcsnlen(buf.c_str(), buf.size()));
+        return OSTPlatform::Encoding::WideToUtf8(buf);
+    }
+
+    // base_url / auth_token 只从注册表读，不再放 toml（2026-10-19 和使用者确认）：
+    // 换/覆盖 opensteamtool.toml 时 token 不会被冲掉，也不会随配置文件被复制走。
+    // 只读 HKCU（当前用户），不做 HKLM 兜底（2026-10-19 和使用者确认）——换了 Windows 账户运行 Steam 就要在那个账户下重新写。
+    // 每次 Load 都重读，但 Load 只在 toml 变化 / 启动时触发：只改注册表不会立即生效，要 touch 一下 toml 或重启 Steam。
+    // 写入示例：
+    //   reg add HKCU\Software\OpenSteamTool\CDKey /v BaseUrl   /t REG_SZ /d "https://xxx.workers.dev" /f
+    //   reg add HKCU\Software\OpenSteamTool\CDKey /v AuthToken /t REG_SZ /d "<token>" /f
+    void ReadCdkeyRegistry(CdkeySettings& cdkey) {
+        std::string url = ReadCdkeyRegistryString(L"BaseUrl");
+        // 去掉末尾 '/'，免得和 "/cdkeycheck" 拼出 "//cdkeycheck"。
+        while (!url.empty() && url.back() == '/') url.pop_back();
+        cdkey.baseUrl = std::move(url);
+
+        std::string token = ReadCdkeyRegistryString(L"AuthToken");
+        // 含 CR/LF 的 token 会让人往请求头里塞额外的头（header injection），直接丢弃。
+        if (token.find_first_of("\r\n") == std::string::npos)
+            cdkey.authToken = std::move(token);
+        else
+            LOG_WARN("cdkey registry AuthToken contains CR/LF, ignored");
     }
 
     LoadResult ApplySnapshotLocked(const Snapshot& snapshot) {
@@ -88,6 +145,7 @@ namespace {
 
     LoadResult Load(const std::string& configPath) {
         Snapshot snapshot = MakeDefaultSnapshot(configPath);
+        ReadCdkeyRegistry(snapshot.cdkey);
         if (!std::filesystem::exists(configPath)) {
             LOG_INFO("Config file not found, using defaults");
             ApplyManifestProvider(snapshot.manifestProvider);
@@ -230,21 +288,9 @@ namespace {
 
             // [cdkey]
             if (auto cdkey = tbl["cdkey"].as_table()) {
-                if (auto val = (*cdkey)["base_url"].value<std::string>()) {
-                    // 去掉末尾 '/'，免得和 "/cdkeycheck" 拼出 "//cdkeycheck"。
-                    std::string url = *val;
-                    while (!url.empty() && url.back() == '/') url.pop_back();
-                    snapshot.cdkey.baseUrl = std::move(url);
-                }
-                if (auto val = (*cdkey)["report_enabled"].value<bool>())
-                    snapshot.cdkey.reportEnabled = *val;
-                if (auto val = (*cdkey)["auth_token"].value<std::string>()) {
-                    // 含 CR/LF 的 token 会让人往请求头里塞额外的头（header injection），直接丢弃。
-                    if (val->find_first_of("\r\n") == std::string::npos)
-                        snapshot.cdkey.authToken = *val;
-                    else
-                        LOG_WARN("cdkey.auth_token contains CR/LF, ignored");
-                }
+                // base_url / auth_token 已挪到注册表（见 ReadCdkeyRegistry），toml 里还写着就提醒删掉。
+                if (cdkey->contains("base_url") || cdkey->contains("auth_token"))
+                    LOG_WARN("cdkey.base_url/auth_token in toml are ignored, set them in registry HKCU\\Software\\OpenSteamTool\\CDKey");
                 if (auto val = (*cdkey)["timeout_ms"].value<int64_t>())
                     snapshot.cdkey.timeoutMs = static_cast<uint32_t>(*val);
             }
@@ -337,7 +383,6 @@ namespace {
         std::lock_guard lock(g_mutex);
         return {
             cdkeyBaseUrl,
-            cdkeyReportEnabled,
             cdkeyAuthToken,
             cdkeyTimeoutMs,
         };
