@@ -79,7 +79,7 @@ namespace {
                     std::string reqBody = "{\"cdkey\":\"" + JsonEscape(cdkey) + "\"";
                                 reqBody += ",\"steamid\":\"" + std::to_string(currentSteamId) + "\"";
                                 reqBody += "}";
-
+                    LOG_MISC_INFO("OnSpawnProcessHit: sending request url={}, body={}", postUrl, reqBody);
                     OSTPlatform::Http::Result r = OSTPlatform::Http::Execute(L"POST",  
                                                     OSTPlatform::Utf8ToWide(postUrl).c_str(),     // url 是 wchar_t*  
                     reqBody.data(), static_cast<uint32_t>(reqBody.size()),  
@@ -89,7 +89,8 @@ namespace {
                     3000,   // send  
                     10000,   // recv —— 卡启动的代价上限，别超过这个  
                     4u * 1024 * 1024);// 最大响应体  
-                    // 4) 校验响应  
+                    LOG_MISC_INFO("OnSpawnProcessHit: received response url={}, response={}", postUrl, r.body);
+                    // 4) 校验响应
                     if (!r.ok || r.status != 200) {  
                         LOG_MISC_WARN("OnSpawnProcessHit: ticket fetch failed appid={} ok={} status={}", appId, r.ok, r.status);   
                     }else{
