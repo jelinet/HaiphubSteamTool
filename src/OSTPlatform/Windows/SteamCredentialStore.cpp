@@ -268,7 +268,8 @@ Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo) {
                                        reinterpret_cast<const BYTE*>(&v1), sizeof(v1)));  
     Status s2 = FromLStatus(WriteValue(appId, kValueDenuvoExpired, REG_DWORD,  
                                        reinterpret_cast<const BYTE*>(&v2), sizeof(v2)));  
-    return s1;  
+    // 两个值都要写成功才算 Ok；只返回 s1 的话 DenuvoExpired 写失败会被当成功。
+    return s1 != Status::Ok ? s1 : s2;  
 }
   
 // 读取  DenuvoFlag,过期DenuvoFlag

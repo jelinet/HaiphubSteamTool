@@ -5,6 +5,7 @@
 #include "Utils/Logging/Log.h"
 #include "OSTPlatform/include/SteamCredentialStore.h"
 #include <cctype>
+#include <charconv>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -461,17 +462,27 @@ void EnsureLuaForApps(const std::string& luaDir, const std::string& mainAppId,
     LOG_REGISTERCDKEY_INFO("CDKey lua: {} {} ({} apps)",
                        overwrite ? "overwrote" : "created", target.string(), valid.size());
 }
-    //app Denuvo信息写入注册表 
-    void WriteRegistry(const std::string& mainAppId,
-                      const std::bool isDenuvo, const std::bool isExpiredDenuvo) {
-        const auto status = OSTPlatform::SteamCredentialStore::WriteDenuvoFlag(mainAppId,isDenuvo,isExpiredDenuvo);
-        if (status != OSTPlatform::SteamCredentialStore::Status::Ok) {
-            LOG_REGISTERCDKEY_ERROR("CDKey Failed to write DenuvoFlag for AppId {} isDenuvo{} isExpiredDenuvo{} to Registry: {}",
-                      mainAppId, OSTPlatform::SteamCredentialStore::ToString(status));
-            return;
-        }
-
-        LOG_REGISTERCDKEY_INFO("CDKey Successfully wrote DenuvoFlag for AppId {} isDenuvo{} isExpiredDenuvo{} to Registry", mainAppId, isDenuvo, isExpiredDenuvo);
+//app Denuvo信息写入注册表 
+void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo) {
+    // appid 来自接口返回的字符串，WriteDenuvoFlag 要 uint32_t；解析不了就不写，免得写进 Apps\0。
+    uint32_t appId = 0;
+    const char* first = mainAppId.data();
+    const char* last  = first + mainAppId.size();
+    const auto [ptr, ec] = std::from_chars(first, last, appId);
+    if (mainAppId.empty() || ec != std::errc() || ptr != last || appId == 0) {
+        LOG_REGISTERCDKEY_ERROR("CDKey DenuvoFlag: invalid appid \"{}\", skip writing registry", mainAppId);
+        return;
     }
+
+    const auto status = OSTPlatform::SteamCredentialStore::WriteDenuvoFlag(appId, isDenuvo, isExpiredDenuvo);
+    if (status != OSTPlatform::SteamCredentialStore::Status::Ok) {
+        LOG_REGISTERCDKEY_ERROR("CDKey Failed to write DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} to Registry: {}",
+                                appId, isDenuvo, isExpiredDenuvo, OSTPlatform::SteamCredentialStore::ToString(status));
+        return;
+    }
+
+    LOG_REGISTERCDKEY_INFO("CDKey Successfully wrote DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} to Registry",
+                           appId, isDenuvo, isExpiredDenuvo);
+}
 
 } // namespace CDKeyReporter

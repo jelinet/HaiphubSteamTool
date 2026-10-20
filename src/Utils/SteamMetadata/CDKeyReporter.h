@@ -83,8 +83,8 @@ namespace CDKeyReporter {
                           const std::vector<LuaApp>& apps, const std::vector<LuaTicket>& tickets);
 
     //app Denuvo信息写入注册表 
-    void WriteRegistry(const std::string& mainAppId,
-                      const std::bool isDenuvo, const std::bool isExpiredDenuvo);
+    // mainAppId 不是 1~10 位纯数字（或超出 uint32）时只写日志、不写注册表。
+    void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo);
 
     // 本机机器码：读注册表 HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid
     // （Windows 安装时生成，重装系统会变）。读不到时返回空字符串。

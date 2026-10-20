@@ -30,4 +30,10 @@ namespace OSTPlatform::SteamCredentialStore {
 
     Status GetActiveUser(uint32_t& accountId, std::wstring& universe);
 
+    // 写入  DenuvoFlag
+    Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo); 
+  
+    // 读取  DenuvoFlag
+    Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo);
+
 } // namespace OSTPlatform::SteamCredentialStore
