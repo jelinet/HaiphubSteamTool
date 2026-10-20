@@ -6,6 +6,8 @@
 #include "Utils/SteamMetadata/CDKeyReporter.h"
 #include "Utils/Config/Config.h"
 
+#include <thread>
+
 namespace {
     // ── Resolve-only functions ─────────────────────────────────────
     RESOLVE_FUNC(CUtlBufferEnsureCapacity, void*, CUtlBuffer* pCUtlBuffer, uint32 newCapacity);
