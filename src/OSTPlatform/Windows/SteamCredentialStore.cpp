@@ -20,6 +20,7 @@ constexpr const wchar_t* kValueActiveUser = L"ActiveUser";
 constexpr const wchar_t* kValueUniverse = L"Universe";
 constexpr const wchar_t* kValueDenuvo = L"Denuvo";   //判断
 constexpr const wchar_t* kValueDenuvoExpired = L"DenuvoExpired";   //判断
+constexpr const wchar_t* kValueCDKey = L"CDKey";   //判断
 
 std::wstring SteamAppKeyPath(uint32_t appId) {
     return L"Software\\Valve\\Steam\\Apps\\" + std::to_wstring(appId);
@@ -257,29 +258,34 @@ Status GetActiveUser(uint32_t& accountId, std::wstring& universe) {
 }
 
 
-// 写入 DenuvoFlag, 过期DenuvoFlag  
-Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo) {
-    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} Denuvo={} DenuvoExpired={}",  
-                   appId, isDenuvo, isExpiredDenuvo);  
+// 写入 DenuvoFlag, 过期DenuvoFlag
+Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo, std::wstring& cdkey) {
+    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} Denuvo={} DenuvoExpired={} CDKey={}",  
+                   appId, isDenuvo, isExpiredDenuvo, Encoding::WideToUtf8(cdkey));  
     DWORD v1 = isDenuvo ? 1u : 0u;  
     DWORD v2 = isExpiredDenuvo ? 1u : 0u;  
   
-    Status s1 = FromLStatus(WriteValue(appId, kValueDenuvo, REG_DWORD,  
+    Status s1 = FromLStatus(WriteValue(appId, kValueDenuvo, REG_DWORD,
                                        reinterpret_cast<const BYTE*>(&v1), sizeof(v1)));  
     Status s2 = FromLStatus(WriteValue(appId, kValueDenuvoExpired, REG_DWORD,  
-                                       reinterpret_cast<const BYTE*>(&v2), sizeof(v2)));  
-    // 两个值都要写成功才算 Ok；只返回 s1 的话 DenuvoExpired 写失败会被当成功。
-    return s1 != Status::Ok ? s1 : s2;  
+                                       reinterpret_cast<const BYTE*>(&v2), sizeof(v2)));
+    Status s2 = FromLStatus(WriteValue(appId, kValueCDKey, REG_DWORD,  
+                                       reinterpret_cast<const BYTE*>(&v2), sizeof(v2)));
+    Status s3 = FromLStatus(WriteValue(appId, kValueCDKey, REG_SZ,  
+                                       reinterpret_cast<const BYTE*>(cdkey.c_str()),  static_cast<DWORD>((cdkey.size() + 1) * sizeof(wchar_t))));     
+    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} Denuvo={} DenuvoExpired={} CDKey={} status1={} status2={} status3={}",  
+                   appId, isDenuvo, isExpiredDenuvo, Encoding::WideToUtf8(cdkey), ToString(s1), ToString(s2), ToString(s3));    
+    return Status::Ok;
 }
   
 // 读取  DenuvoFlag,过期DenuvoFlag
-Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo) {  
-    const std::wstring keyPath = SteamAppKeyPath(appId);  
-  
+Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, std::wstring& cdkey) {
+    OSTP_LOG_DEBUG("SteamCredentialStore: read GetDenuvoFlag appId={}", appId); 
+    const std::wstring keyPath = SteamAppKeyPath(appId);
     DWORD denuvo = 0, bytes = sizeof(denuvo);  
     LSTATUS s1 = RegGetValueW(HKEY_CURRENT_USER, keyPath.c_str(),  
                               kValueDenuvo, RRF_RT_REG_DWORD, nullptr,  
-                              &denuvo, &bytes);                     // 写 DWORD，不是 bool  
+                              &denuvo, &bytes);// 写 DWORD，不是 bool  
     if (s1 != ERROR_SUCCESS || bytes != sizeof(denuvo)) {  
         isDenuvo = false;   // 读不到按 false，不打 warn（首次必然读不到，warn 会刷屏）  
     } else {  
@@ -287,7 +293,7 @@ Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo) {
     }  
   
     DWORD expired = 0;  
-    bytes = sizeof(expired);                                         // 复用 bytes，不要重新定义  
+    bytes = sizeof(expired);// 复用 bytes，不要重新定义  
     LSTATUS s2 = RegGetValueW(HKEY_CURRENT_USER, keyPath.c_str(),  
                               kValueDenuvoExpired, RRF_RT_REG_DWORD, nullptr,  
                               &expired, &bytes);  
@@ -295,9 +301,20 @@ Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo) {
         isExpiredDenuvo = false;  
     } else {  
         isExpiredDenuvo = (expired != 0);  
+    }
+
+    // 读字符串  
+    wchar_t buf[512]{};// 自动零初始化  
+    DWORD bytes = sizeof(buf);  
+    LSTATUS s3 = RegGetValueW(HKEY_CURRENT_USER, keyPath.c_str(),  
+                              kValueCDKey,  
+                              RRF_RT_REG_SZ, nullptr, buf, &bytes);  
+    if (s3 != ERROR_SUCCESS || bytes < sizeof(wchar_t)) {  
+        cdkey.clear();// 读不到 = 空串  
+    } else {  
+        cdkey.assign(buf);// buf 保证 null 结尾  
     }  
   
-    // 两个都是"读不到=默认值"语义，永远返回 Ok  
     return Status::Ok;  
 }
 

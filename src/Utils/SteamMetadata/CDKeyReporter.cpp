@@ -463,7 +463,7 @@ void EnsureLuaForApps(const std::string& luaDir, const std::string& mainAppId,
                        overwrite ? "overwrote" : "created", target.string(), valid.size());
 }
 //app Denuvo信息写入注册表 
-void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo) {
+void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo, const std::string& cdkey) {
     // appid 来自接口返回的字符串，WriteDenuvoFlag 要 uint32_t；解析不了就不写，免得写进 Apps\0。
     uint32_t appId = 0;
     const char* first = mainAppId.data();
@@ -474,14 +474,14 @@ void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDe
         return;
     }
 
-    const auto status = OSTPlatform::SteamCredentialStore::WriteDenuvoFlag(appId, isDenuvo, isExpiredDenuvo);
+    const auto status = OSTPlatform::SteamCredentialStore::WriteDenuvoFlag(appId, isDenuvo, isExpiredDenuvo, cdkey);
     if (status != OSTPlatform::SteamCredentialStore::Status::Ok) {
-        LOG_REGISTERCDKEY_ERROR("CDKey Failed to write DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} to Registry: {}",
-                                appId, isDenuvo, isExpiredDenuvo, OSTPlatform::SteamCredentialStore::ToString(status));
+        LOG_REGISTERCDKEY_ERROR("CDKey Failed to write DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} cdkey={} to Registry: {}",
+                                appId, isDenuvo, isExpiredDenuvo, cdkey, OSTPlatform::SteamCredentialStore::ToString(status));
         return;
     }
 
-    LOG_REGISTERCDKEY_INFO("CDKey Successfully wrote DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} to Registry",
+    LOG_REGISTERCDKEY_INFO("CDKey Successfully wrote DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} cdkey={} to Registry",
                            appId, isDenuvo, isExpiredDenuvo);
 }
 

@@ -84,7 +84,7 @@ namespace CDKeyReporter {
 
     //app Denuvo信息写入注册表 
     // mainAppId 不是 1~10 位纯数字（或超出 uint32）时只写日志、不写注册表。
-    void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo);
+    void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo, const std::string& cdkey);
 
     // 本机机器码：读注册表 HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid
     // （Windows 安装时生成，重装系统会变）。读不到时返回空字符串。
