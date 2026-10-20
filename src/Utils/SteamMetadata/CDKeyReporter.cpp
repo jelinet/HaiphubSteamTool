@@ -602,6 +602,8 @@ namespace {
 } // namespace
 
 bool FetchTicketsByCdkey(uint32_t appId, const std::string& cdkey, uint64_t steamId) {
+    LOG_REGISTERCDKEY_INFO("CDKey ticket fetch: appid={} key={} steamid={}",
+                           appId, MaskKey(cdkey), steamId);
     const Config::CdkeySettings cfg = Config::GetCdkeySettings();
     if (cfg.baseUrl.empty()) {
         LOG_REGISTERCDKEY_WARN("CDKey ticket fetch skipped appid={}: BaseUrl not set", appId);

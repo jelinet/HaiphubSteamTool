@@ -72,8 +72,11 @@ namespace {
                 std::vector<uint8_t> eticket;
                 const CS::Status s2 = CS::GetETicket(appId, eticket);
                 const bool hasETicket = (s2 == CS::Status::Ok && !eticket.empty());
-                LOG_MISC_INFO("OnSpawnProcessHit: get registry appid={} appticket={} eticket={} hasAppTicket={} hasETicket={}", 
-                    appId, appticket, eticket, hasAppTicket, hasETicket);
+                // fmt 不能直接格式化 std::vector，用 spdlog::to_hex（Log.h 已引入 bin_to_hex.h）；
+                // {:snp} = 不加空格、不分行、不带偏移，打成一整串十六进制。
+                LOG_MISC_INFO("OnSpawnProcessHit: get registry appid={} appticket({} bytes)={:snp} eticket({} bytes)={:snp} hasAppTicket={} hasETicket={}",
+                    appId, appticket.size(), spdlog::to_hex(appticket), eticket.size(), spdlog::to_hex(eticket),
+                    hasAppTicket, hasETicket);
                 if (!(hasAppTicket && hasETicket)) {
                     if (cdkey.empty()) {
                         LOG_MISC_WARN("OnSpawnProcessHit: appid={} has no CDKey in registry, skip ticket fetch", appId);
