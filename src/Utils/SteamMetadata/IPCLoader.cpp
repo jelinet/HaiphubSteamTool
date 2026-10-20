@@ -139,11 +139,13 @@ namespace {
     static void ShowMissingPopup(const std::string& sha256)
     {
         SteamDiagnostics::ShowWarning(
-            "System File Download Failed",
-            "Steam monitor: " + sha256 + " failed to download\n\n"
-            "Please Check Your Network\n\n"
-            "or\n\n"
-            "Contact Customer Service");
+            "Steam - Missing Signatures",
+            "Steam - IPC spec missing:" + sha256 + " failed to download\n\n"
+            "Steam: IPC spec file not found.\n\n"
+            "Please Check Your Network\n"
+            "or\n"
+            "Contact Customer Service"
+        );
     }
 
 } // namespace

@@ -149,11 +149,16 @@ static void ShowDownloadFailedPopup(const std::string& dllName,
                                     const std::string& component)
 {
     SteamDiagnostics::ShowWarning(
-        "System File Download Failed",
-        "steam monitor: " + sha256 + " (" + component + ") failed to download\n\n"
-        "Please Check Your Network\n\n"
-        "or\n\n"
-        "Contact Customer Service");
+        "Steam - Unsupported Steam Version",
+        "Steam: signature file not found for " + dllName + ".\n\n"
+        "that depend on " + dllName + " are disabled for this session; "
+        "other modules are unaffected.\n\n"
+        "Please Check Your Network\n"
+        "or\n"
+        "Contact Customer Service"
+    
+    
+    );
 }
 
 } // namespace
@@ -272,11 +277,14 @@ void ReportMissingFunctions()
     g_missingFunctions.clear();
 
     SteamDiagnostics::ShowWarning(
-        "System File Download Failed",
-        "Steam monitor: some patterns failed to load,\n\n"
-        "Please Check Your Network\n\n"
-        "or\n\n"
-        "Contact Customer Service");
+        "Steam - Missing Signatures",
+        "Steam: some functions could not be located.\n\n"
+        "The following functions were not found in the signature file:\n" +
+        list + 
+        "Please Check Your Network\n"
+        "or\n"
+        "Contact Customer Service"
+    );
 }
 
 } // namespace PatternLoader
