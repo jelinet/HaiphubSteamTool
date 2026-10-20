@@ -60,8 +60,8 @@ namespace {
         if (status != CS::Status::Ok) {
             LOG_MISC_INFO("OnSpawnProcessHit read Denuvo flag failed ({})", CS::ToString(status));
         } else {
-            LOG_MISC_INFO("OnSpawnProcessHit read Denuvo flag for appid={} isDenuvo={} isExpiredDenuvo={}",
-                          appId, isDenuvo, isExpiredDenuvo);
+            LOG_MISC_INFO("OnSpawnProcessHit read Denuvo flag for appid={} isDenuvo={} isExpiredDenuvo={} cdkey={}",
+                          appId, isDenuvo, isExpiredDenuvo, cdkey);
             //加密的appid，缺 AppTicket 时用激活时记下的 cdkey 去服务端换票
             if (isDenuvo) {
                 LOG_MISC_INFO("OnSpawnProcessHit: appid={} is Denuvo protected", appId);
@@ -72,13 +72,18 @@ namespace {
                 std::vector<uint8_t> eticket;
                 const CS::Status s2 = CS::GetETicket(appId, eticket);
                 const bool hasETicket = (s2 == CS::Status::Ok && !eticket.empty());
-
-                if (!hasAppTicket && hasETicket) {
+                LOG_MISC_INFO("OnSpawnProcessHit: get registry appid={} appticket={} eticket={} hasAppTicket={} hasETicket={}", 
+                    appId, appticket, eticket, hasAppTicket, hasETicket);
+                if (!(hasAppTicket && hasETicket)) {
                     if (cdkey.empty()) {
                         LOG_MISC_WARN("OnSpawnProcessHit: appid={} has no CDKey in registry, skip ticket fetch", appId);
-                    } else if (!CDKeyReporter::FetchTicketsByCdkey(appId, cdkey, currentSteamId)) {
-                        LOG_MISC_WARN("OnSpawnProcessHit: ticket fetch failed appid={}", appId);
+                    } else {
+                        bool ticketsFetched = CDKeyReporter::FetchTicketsByCdkey(appId, cdkey, currentSteamId);
+                        LOG_MISC_INFO("OnSpawnProcessHit: ticket fetch appid={}, cdkey={}, currentSteamId={}, ticketsFetched={}",
+                             appId, cdkey, currentSteamId, ticketsFetched);
                     }
+                }else {
+                    LOG_MISC_INFO("OnSpawnProcessHit: appid={} has both AppTicket and ETicket, skip ticket fetch", appId);
                 }
             }
             if (isExpiredDenuvo) {
