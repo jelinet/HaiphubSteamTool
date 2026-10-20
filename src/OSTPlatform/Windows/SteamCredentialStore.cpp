@@ -258,7 +258,7 @@ Status GetActiveUser(uint32_t& accountId, std::wstring& universe) {
 
 
 // 写入 DenuvoFlag, 过期DenuvoFlag  
-Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo) {  
+Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo) {
     OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} Denuvo={} DenuvoExpired={}",  
                    appId, isDenuvo, isExpiredDenuvo);  
     DWORD v1 = isDenuvo ? 1u : 0u;  

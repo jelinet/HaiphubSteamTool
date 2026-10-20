@@ -14,9 +14,8 @@ namespace {
     // returns HTTP 200. github-raw first for pointer freshness; jsDelivr and lua.tools
     // cover regions where raw.githubusercontent is throttled/blocked.
     constexpr const char* kBaseTemplates[] = {
-        "https://raw.githubusercontent.com/madoiscool/BetterSteamTools/updates/{path}",
         "https://cdn.jsdelivr.net/gh/madoiscool/BetterSteamTools@updates/{path}",
-        "https://git.lua.tools/luatools/BetterSteamTools/raw/branch/updates/{path}",
+        "https://git.lua.tools/luatools/BetterSteamTools/raw/branch/updates/{path}"
     };
 
     std::string Expand(std::string tmpl, std::string_view relPath)

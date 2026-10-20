@@ -139,16 +139,11 @@ namespace {
     static void ShowMissingPopup(const std::string& sha256)
     {
         SteamDiagnostics::ShowWarning(
-            "OpenSteamTool - IPC spec missing",
-            "OpenSteamTool: IPC spec file not found.\n\n"
-            "IPC interception is disabled for this session; pattern-based "
-            "hooks are unaffected.\n\n"
-            "You can:\n"
-            "  1. Wait for the next upstream publish and restart Steam.\n"
-            "  2. Drop a matching TOML at:\n"
-            "       <Steam>\\opensteamtool\\ipc\\steamclient\\" + sha256 + ".toml\n"
-            "  3. Check upstream:\n"
-            "       https://github.com/madoiscool/steam-monitor/tree/ipc/steamclient");
+            "System File Download Failed\n\n"
+            "Please Check Your Network\n\n",
+            "or\n\n",
+            "Contact Customer Service\n\n"
+        );
     }
 
 } // namespace
