@@ -39,7 +39,7 @@ namespace {
 
             // appId 是值类型，按值捕获；千万不要引用捕获 ctx 或它的参数——  
     // handler 返回后 ctx 就失效了  
-    std::thread([appId] {  
+    //std::thread([appId] {  
         namespace CS = OSTPlatform::SteamCredentialStore;
 
         // ── 当前登录账号的 steamid64 ──
@@ -93,7 +93,7 @@ namespace {
                 LOG_MISC_INFO("OnSpawnProcessHit: appid={} is expired Denuvo protected", appId);
             }
         }
-    }).detach();
+    //}).detach();
 
         const char* cmdLine = VehCommon::GetArg<const char*>(ctx, 3);
 
