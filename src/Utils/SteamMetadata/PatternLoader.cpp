@@ -149,11 +149,10 @@ static void ShowDownloadFailedPopup(const std::string& dllName,
                                     const std::string& component)
 {
     SteamDiagnostics::ShowWarning(
-        "System File Download Failed\n\n"
-        "Please Check Your Network\n\n",
-        "or\n\n",
-        "Contact Customer Service\n\n"
-    );
+        "System File Download Failed",
+        "Please Check Your Network\n\n"
+        "or\n\n"
+        "Contact Customer Service");
 }
 
 } // namespace
@@ -272,11 +271,10 @@ void ReportMissingFunctions()
     g_missingFunctions.clear();
 
     SteamDiagnostics::ShowWarning(
-        "System File Download Failed\n\n"
-        "Please Check Your Network\n\n",
-        "or\n\n",
-        "Contact Customer Service\n\n"
-        );
+        "System File Download Failed",
+        "Please Check Your Network\n\n"
+        "or\n\n"
+        "Contact Customer Service");
 }
 
 } // namespace PatternLoader

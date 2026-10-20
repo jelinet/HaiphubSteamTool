@@ -139,11 +139,10 @@ namespace {
     static void ShowMissingPopup(const std::string& sha256)
     {
         SteamDiagnostics::ShowWarning(
-            "System File Download Failed\n\n"
-            "Please Check Your Network\n\n",
-            "or\n\n",
-            "Contact Customer Service\n\n"
-        );
+            "System File Download Failed",
+            "Please Check Your Network\n\n"
+            "or\n\n"
+            "Contact Customer Service");
     }
 
 } // namespace
