@@ -31,9 +31,11 @@ namespace OSTPlatform::SteamCredentialStore {
     Status GetActiveUser(uint32_t& accountId, std::wstring& universe);
 
     // 写入  DenuvoFlag
-    Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo); 
+    // cdkey 是 UTF-8，内部转成 REG_SZ 写进 Apps\<appid>\CDKey。
+    Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo, const std::string& cdkey);
   
     // 读取  DenuvoFlag
-    Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo);
+    // 读不到的值按默认（false / 空串）返回，永远返回 Ok。
+    Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, std::string& cdkey);
 
 } // namespace OSTPlatform::SteamCredentialStore

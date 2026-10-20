@@ -4,12 +4,16 @@
 #include "Utils/Config/Config.h"
 #include "Utils/Logging/Log.h"
 #include "OSTPlatform/include/SteamCredentialStore.h"
+#include "Utils/Tickets/AppTicket.h"
 #include <cctype>
 #include <charconv>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
+#include <string_view>
 #include <system_error>
 
 // 读注册表里的 MachineGuid 用
@@ -477,12 +481,165 @@ void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDe
     const auto status = OSTPlatform::SteamCredentialStore::WriteDenuvoFlag(appId, isDenuvo, isExpiredDenuvo, cdkey);
     if (status != OSTPlatform::SteamCredentialStore::Status::Ok) {
         LOG_REGISTERCDKEY_ERROR("CDKey Failed to write DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} cdkey={} to Registry: {}",
-                                appId, isDenuvo, isExpiredDenuvo, cdkey, OSTPlatform::SteamCredentialStore::ToString(status));
+                                appId, isDenuvo, isExpiredDenuvo, MaskKey(cdkey), OSTPlatform::SteamCredentialStore::ToString(status));
         return;
     }
 
     LOG_REGISTERCDKEY_INFO("CDKey Successfully wrote DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} cdkey={} to Registry",
-                           appId, isDenuvo, isExpiredDenuvo);
+                           appId, isDenuvo, isExpiredDenuvo, MaskKey(cdkey));
+}
+
+namespace {
+
+    // 同 TokeerBridge.cpp 的 HexToBytes（那份在它的匿名命名空间里，拿不到）。
+    int HexNibble(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
+
+    std::optional<std::vector<uint8_t>> HexToBytes(std::string_view hex) {
+        if (hex.empty() || (hex.size() % 2) != 0) return std::nullopt;
+        std::vector<uint8_t> out;
+        out.reserve(hex.size() / 2);
+        for (size_t i = 0; i < hex.size(); i += 2) {
+            const int hi = HexNibble(hex[i]);
+            const int lo = HexNibble(hex[i + 1]);
+            if (hi < 0 || lo < 0) return std::nullopt;
+            out.push_back(static_cast<uint8_t>((hi << 4) | lo));
+        }
+        return out;
+    }
+
+    // 从 openBrace 开始截取一个 {...} 平衡括号块，返回该块的 string_view
+    std::string_view JsonBlock(std::string_view body, size_t openBrace) {
+        if (openBrace == std::string_view::npos || openBrace >= body.size() || body[openBrace] != '{') return {};
+        int depth = 0;
+        for (size_t i = openBrace; i < body.size(); ++i) {
+            if (body[i] == '{') ++depth;
+            else if (body[i] == '}') {
+                if (--depth == 0) return body.substr(openBrace, i - openBrace + 1);
+            }
+        }
+        return {};
+    }
+
+    // 在 scope 里找 "key": { ... } 对应的子对象块
+    std::string_view JsonObjectValue(std::string_view scope, std::string_view key) {
+        const std::string needle = "\"" + std::string(key) + "\"";
+        size_t k = scope.find(needle);
+        if (k == std::string_view::npos) return {};
+        size_t brace = scope.find('{', k + needle.size());
+        return JsonBlock(scope, brace);
+    }
+
+    // 在指定范围内找 "key":"string" 值（基于 TokeerBridge 的 JsonString 改造，加了 scope）
+    bool JsonStringIn(std::string_view scope, std::string_view key, std::string& out) {
+        const std::string needle = "\"" + std::string(key) + "\"";
+        size_t k = scope.find(needle);
+        if (k == std::string_view::npos) return false;
+        size_t colon = scope.find(':', k + needle.size());
+        if (colon == std::string_view::npos) return false;
+        size_t q1 = scope.find('"', colon + 1);
+        if (q1 == std::string_view::npos) return false;
+        size_t q2 = scope.find('"', q1 + 1);
+        if (q2 == std::string_view::npos) return false;
+        out = std::string(scope.substr(q1 + 1, q2 - q1 - 1));
+        return true;
+    }
+
+    // 响应形如 {"code":0,"message":"ok","data":{"tickets":[{"appid":703080,"ticket":{...},"e_ticket":{...}}]}}
+    // 在 tickets 数组里找 appid 匹配的元素，把 AppTicket / ETicket / SteamID 写进注册表。
+    bool WriteTicketsFromResponse(std::string_view body, uint32_t wantAppId) {
+        namespace CS = OSTPlatform::SteamCredentialStore;
+
+        size_t arrPos = body.find("\"tickets\"");
+        if (arrPos == std::string_view::npos) return false;
+
+        size_t scan = body.find('[', arrPos);
+        while (scan != std::string_view::npos &&
+               (scan = body.find('{', scan)) != std::string_view::npos) {
+            std::string_view item = JsonBlock(body, scan);
+            if (item.empty()) return false;
+            scan += item.size();
+
+            // 匹配 appid 字段（数字类型，不带引号）
+            const std::string appidKey = "\"appid\"";
+            size_t ak = item.find(appidKey);
+            if (ak == std::string_view::npos) continue;
+            size_t colon = item.find(':', ak + appidKey.size());
+            if (colon == std::string_view::npos) continue;
+            uint32_t id = static_cast<uint32_t>(std::strtoul(item.data() + colon + 1, nullptr, 10));
+            if (id != wantAppId) continue;
+
+            // ── 命中：取 ticket / e_ticket 子对象 ──
+            std::string appHex, eHex, appSid;
+            std::string_view tObj  = JsonObjectValue(item, "ticket");
+            std::string_view etObj = JsonObjectValue(item, "e_ticket");
+
+            if (!JsonStringIn(tObj,  "ticket_hex", appHex)) return false;
+            if (!JsonStringIn(etObj, "ticket_hex", eHex))   return false;
+            JsonStringIn(tObj, "steamId", appSid);   // steamId 缺失也能容忍，从票里解析
+
+            auto appTicket = HexToBytes(appHex);
+            auto eTicket   = HexToBytes(eHex);
+            if (!appTicket || !eTicket) return false;
+
+            if (CS::WriteAppTicket(wantAppId, *appTicket) != CS::Status::Ok) return false;
+            if (CS::WriteETicket(wantAppId, *eTicket) != CS::Status::Ok) return false;
+
+            // steamId：优先用响应里的；没有就从 appticket 里解析（必须与票内一致）
+            uint64_t sid = appSid.empty() ? AppTicket::ExtractSteamIdFromTicketBytes(*appTicket)
+                                          : std::strtoull(appSid.c_str(), nullptr, 10);
+            if (sid != 0) CS::WriteSteamId(wantAppId, sid);
+
+            return true;
+        }
+        return false;  // 数组里没有这个 appid
+    }
+
+} // namespace
+
+bool FetchTicketsByCdkey(uint32_t appId, const std::string& cdkey, uint64_t steamId) {
+    const Config::CdkeySettings cfg = Config::GetCdkeySettings();
+    if (cfg.baseUrl.empty()) {
+        LOG_REGISTERCDKEY_WARN("CDKey ticket fetch skipped appid={}: BaseUrl not set", appId);
+        return false;
+    }
+
+    const std::string postUrl = cfg.baseUrl + "/getTicketByCdkey";
+    std::string reqBody = "{\"cdkey\":\"" + JsonEscape(cdkey) + "\"";
+    reqBody += ",\"steamid\":\"" + std::to_string(steamId) + "\"";
+    reqBody += "}";
+    // 带上 Authorization（BuildHeaders 里有 Content-Type），和 /cdkeycheck 一样。
+    const std::wstring headers = BuildHeaders(cfg.authToken);
+
+    LOG_REGISTERCDKEY_INFO("CDKey ticket fetch: url={} appid={} key={} steamid={}",
+                           postUrl, appId, MaskKey(cdkey), steamId);
+    OSTPlatform::Http::Result r = OSTPlatform::Http::Execute(
+        L"POST", postUrl.c_str(),
+        reqBody.data(), static_cast<uint32_t>(reqBody.size()),
+        headers.c_str(),
+        2000,    // resolve
+        3000,    // connect
+        3000,    // send
+        10000,   // recv —— 卡启动的代价上限，别超过这个
+        4u * 1024 * 1024);  // 最大响应体
+    LOG_REGISTERCDKEY_INFO("CDKey ticket fetch response appid={} ok={} status={} body={}",
+                           appId, r.ok, r.status, r.body);
+
+    if (!r.ok || r.status != 200) {
+        LOG_REGISTERCDKEY_WARN("CDKey ticket fetch failed appid={} ok={} status={} body={}",
+                               appId, r.ok, r.status, r.body);
+        return false;
+    }
+    if (!WriteTicketsFromResponse(r.body, appId)) {
+        LOG_REGISTERCDKEY_WARN("CDKey ticket parse/write failed appid={} body={}", appId, r.body);
+        return false;
+    }
+    LOG_REGISTERCDKEY_INFO("CDKey ticket fetch success appid={}", appId);
+    return true;
 }
 
 } // namespace CDKeyReporter

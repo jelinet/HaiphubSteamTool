@@ -86,6 +86,13 @@ namespace CDKeyReporter {
     // mainAppId 不是 1~10 位纯数字（或超出 uint32）时只写日志、不写注册表。
     void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo, const std::string& cdkey);
 
+    // 启动 Denuvo 游戏时本地缺 AppTicket，就拿激活时记下的 cdkey 去 <BaseUrl>/getTicketByCdkey 换票，
+    // 成功后把 AppTicket / ETicket / SteamID 写进 HKCU\Software\Valve\Steam\Apps\<appId>。
+    // 同步阻塞调用方，最长约 2+3+3+10 秒（各阶段超时之和）。BaseUrl 没配、HTTP 失败、
+    // 响应里没有这个 appid 或票不是合法十六进制时返回 false，只写日志。
+    // （2026-10-21 从 Hooks_Misc.cpp 挪过来：要用本文件里的 JsonEscape / BuildHeaders，它们不对外。）
+    bool FetchTicketsByCdkey(uint32_t appId, const std::string& cdkey, uint64_t steamId);
+
     // 本机机器码：读注册表 HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid
     // （Windows 安装时生成，重装系统会变）。读不到时返回空字符串。
     std::string GetMachineId();

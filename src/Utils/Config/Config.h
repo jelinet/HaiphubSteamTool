@@ -108,6 +108,6 @@ namespace Config {
     // [cdkey]
     inline std::string cdkeyBaseUrl;
     inline std::string cdkeyAuthToken;
-    inline uint32_t    cdkeyTimeoutMs = 2000;
+    inline uint32_t    cdkeyTimeoutMs = 5000;
 
 }

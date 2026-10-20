@@ -259,9 +259,9 @@ Status GetActiveUser(uint32_t& accountId, std::wstring& universe) {
 
 
 // 写入 DenuvoFlag, 过期DenuvoFlag
-Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo, std::wstring& cdkey) {
-    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} Denuvo={} DenuvoExpired={} CDKey={}",  
-                   appId, isDenuvo, isExpiredDenuvo, Encoding::WideToUtf8(cdkey));  
+Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo, const std::string& cdkey) {
+    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} Denuvo={} DenuvoExpired={}",
+                   appId, isDenuvo, isExpiredDenuvo);
     DWORD v1 = isDenuvo ? 1u : 0u;  
     DWORD v2 = isExpiredDenuvo ? 1u : 0u;  
   
@@ -269,17 +269,21 @@ Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo, std:
                                        reinterpret_cast<const BYTE*>(&v1), sizeof(v1)));  
     Status s2 = FromLStatus(WriteValue(appId, kValueDenuvoExpired, REG_DWORD,  
                                        reinterpret_cast<const BYTE*>(&v2), sizeof(v2)));
-    Status s2 = FromLStatus(WriteValue(appId, kValueCDKey, REG_DWORD,  
-                                       reinterpret_cast<const BYTE*>(&v2), sizeof(v2)));
-    Status s3 = FromLStatus(WriteValue(appId, kValueCDKey, REG_SZ,  
-                                       reinterpret_cast<const BYTE*>(cdkey.c_str()),  static_cast<DWORD>((cdkey.size() + 1) * sizeof(wchar_t))));     
-    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} Denuvo={} DenuvoExpired={} CDKey={} status1={} status2={} status3={}",  
-                   appId, isDenuvo, isExpiredDenuvo, Encoding::WideToUtf8(cdkey), ToString(s1), ToString(s2), ToString(s3));    
-    return Status::Ok;
+    const std::wstring wideKey = Encoding::Utf8ToWide(cdkey);
+    Status s3 = FromLStatus(WriteValue(appId, kValueCDKey, REG_SZ,
+                                       reinterpret_cast<const BYTE*>(wideKey.c_str()),
+                                       static_cast<DWORD>((wideKey.size() + 1) * sizeof(wchar_t))));
+    // 日志里不打 cdkey 原文（明文 key 进日志等于泄露）。
+    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} status1={} status2={} status3={}",
+                   appId, ToString(s1), ToString(s2), ToString(s3));
+    // 三个值都写成功才算 Ok，返回第一个失败的状态。
+    if (s1 != Status::Ok) return s1;
+    if (s2 != Status::Ok) return s2;
+    return s3;
 }
   
 // 读取  DenuvoFlag,过期DenuvoFlag
-Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, std::wstring& cdkey) {
+Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, std::string& cdkey) {
     OSTP_LOG_DEBUG("SteamCredentialStore: read GetDenuvoFlag appId={}", appId); 
     const std::wstring keyPath = SteamAppKeyPath(appId);
     DWORD denuvo = 0, bytes = sizeof(denuvo);  
@@ -305,14 +309,14 @@ Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, std:
 
     // 读字符串  
     wchar_t buf[512]{};// 自动零初始化  
-    DWORD bytes = sizeof(buf);  
+    DWORD keyBytes = sizeof(buf);  // 不能再叫 bytes：上面已经定义过同名变量
     LSTATUS s3 = RegGetValueW(HKEY_CURRENT_USER, keyPath.c_str(),  
                               kValueCDKey,  
-                              RRF_RT_REG_SZ, nullptr, buf, &bytes);  
-    if (s3 != ERROR_SUCCESS || bytes < sizeof(wchar_t)) {  
+                              RRF_RT_REG_SZ, nullptr, buf, &keyBytes);  
+    if (s3 != ERROR_SUCCESS || keyBytes < sizeof(wchar_t)) {  
         cdkey.clear();// 读不到 = 空串  
     } else {  
-        cdkey.assign(buf);// buf 保证 null 结尾  
+        cdkey = Encoding::WideToUtf8(buf);// buf 保证 null 结尾  
     }  
   
     return Status::Ok;  

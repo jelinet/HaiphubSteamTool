@@ -4,7 +4,6 @@
 #include "dllmain.h"
 #include "OSTPlatform/include/SteamCredentialStore.h"
 #include "Utils/SteamMetadata/CDKeyReporter.h"
-#include "src/OSTPlatform/Windows/SteamCredentialStore.h"
 #include "Utils/Config/Config.h"
 
 namespace {
@@ -35,75 +34,44 @@ namespace {
         CGameID* pGameID = VehCommon::GetArg<CGameID*>(ctx, 5);
         AppId_t appId = static_cast<AppId_t>(pGameID->AppID(true));
 
-        // ── 当前登录账号的 steamid64 ──  
-        uint64_t currentSteamId = 0;  
-        uint32_t accountId = 0;  
-        std::wstring universe;  
-        if (OSTPlatform::SteamCredentialStore::GetActiveUser(accountId, universe) == CS::Status::Ok) {  
-            // universe 基本是 "public"(=1)，steamid64 = universe<<56 | 1<<52 | accountId  
-            // public 下直接加常量即可  
-            currentSteamId = 0x110000100000000ull + accountId;  
+        namespace CS = OSTPlatform::SteamCredentialStore;
+
+        // ── 当前登录账号的 steamid64 ──
+        uint64_t currentSteamId = 0;
+        uint32_t accountId = 0;
+        std::wstring universe;
+        if (CS::GetActiveUser(accountId, universe) == CS::Status::Ok) {
+            // universe 基本是 "public"(=1)，steamid64 = universe<<56 | 1<<52 | 1<<32 | accountId
+            // public 下直接加常量即可，得到 76561198401240766 这样的值
+            currentSteamId = 0x110000100000000ull + accountId;
         }
-    
-    // currentSteamId = 76561198401240766 这样的值  
+
         //读取注册表，判断游戏
         bool isDenuvo = false;
         bool isExpiredDenuvo = false;
-        std::string cdkey = "";
-        const auto status = OSTPlatform::SteamCredentialStore::GetDenuvoFlag(appId, isDenuvo, isExpiredDenuvo, cdkey);
-        if (status != OSTPlatform::SteamCredentialStore::Status::Ok) {
-            LOG_MISC_INFO("OnSpawnProcessHit read Denuvo flag failed ({})",
-                           OSTPlatform::SteamCredentialStore::ToString(status));
-        }else{
-            LOG_MISC_INFO("OnSpawnProcessHit read Denuvo flag for appid={} isDenuvo={} isExpiredDenuvo={}", appId, isDenuvo, isExpiredDenuvo);
-            //加密的appid，读写注册表，方便后续使用
+        std::string cdkey;
+        const auto status = CS::GetDenuvoFlag(appId, isDenuvo, isExpiredDenuvo, cdkey);
+        if (status != CS::Status::Ok) {
+            LOG_MISC_INFO("OnSpawnProcessHit read Denuvo flag failed ({})", CS::ToString(status));
+        } else {
+            LOG_MISC_INFO("OnSpawnProcessHit read Denuvo flag for appid={} isDenuvo={} isExpiredDenuvo={}",
+                          appId, isDenuvo, isExpiredDenuvo);
+            //加密的appid，缺 AppTicket 时用激活时记下的 cdkey 去服务端换票
             if (isDenuvo) {
                 LOG_MISC_INFO("OnSpawnProcessHit: appid={} is Denuvo protected", appId);
-                // appticket  
-                std::vector<uint8_t> appticket;  
-                Status s1 = OSTPlatform::SteamCredentialStore::GetAppTicket(appId, appticket);
-                LOG_MISC_INFO("OnSpawnProcessHit: fetched app ticket for appid={}", appId);
-                bool hasAppTicket = (s1 == CS::Status::Ok && !appticket.empty());  
-  
-                // eticket  
-                std::vector<uint8_t> eticket;  
-                Status s2 = OSTPlatform::SteamCredentialStore::GetETicket(appId, eticket);  
-                bool hasETicket = (s2 == CS::Status::Ok && !eticket.empty());
-                if(!hasAppTicket && hasETicket){
-                    //组请求
-                    std::string urlPath = "/getTicketByCdkey";
-                    const Config::CdkeySettings cfg = Config::GetCdkeySettings();
-                    const std::wstring headers = BuildHeaders(cfg.authToken);
-                    
-                    const std::string postUrl = cfg.baseUrl + urlPath;
-                    std::string reqBody = "{\"cdkey\":\"" + JsonEscape(cdkey) + "\"";
-                                reqBody += ",\"steamid\":\"" + std::to_string(currentSteamId) + "\"";
-                                reqBody += "}";
-                    LOG_MISC_INFO("OnSpawnProcessHit: sending request url={}, body={}", postUrl, reqBody);
-                    OSTPlatform::Http::Result r = OSTPlatform::Http::Execute(L"POST",  
-                                                    OSTPlatform::Utf8ToWide(postUrl).c_str(),     // url 是 wchar_t*  
-                    reqBody.data(), static_cast<uint32_t>(reqBody.size()),  
-                    L"Content-Type: application/json\r\n",  
-                    2000,   // resolve timeout ms  
-                    3000,   // connect  
-                    3000,   // send  
-                    10000,   // recv —— 卡启动的代价上限，别超过这个  
-                    4u * 1024 * 1024);// 最大响应体  
-                    LOG_MISC_INFO("OnSpawnProcessHit: received response url={}, response={}", postUrl, r.body);
-                    // 4) 校验响应
-                    if (!r.ok || r.status != 200) {  
-                        LOG_MISC_WARN("OnSpawnProcessHit: ticket fetch failed appid={} ok={} status={}", appId, r.ok, r.status);   
-                    }else{
-                        // 2. r.body 就是服务器返回的 JSON 原文，长这样：  
-                        //    {"code":0,"message":"ok","data":{"tickets":[{"appid":703080,...}]}}  
-                        //    把它传进解析函数  
-                        if (!FetchAndWriteTickets(appId, r.body)) {   // ← body 传这里  
-                            LOG_WARN("OnSpawnProcessHit: ticket parse failed appid={}", appId);  
-                        } 
-                        //OSTPlatform::SteamCredentialStore::WriteAppTicket(appId, HexToBytes(appTicketHex));  
-                        //OSTPlatform::SteamCredentialStore::WriteETicket(appId,   HexToBytes(eTicketHex));  
-                        //OSTPlatform::SteamCredentialStore::WriteSteamId(appId,   std::stoull(steamIdStr));   // steamid 必须与票内一致
-                        LOG_MISC_INFO("OnSpawnProcessHit: ticket fetch success appid={} ok={} status={} body={}", appId, r.ok, r.status, r.body);  
+                std::vector<uint8_t> appticket;
+                const CS::Status s1 = CS::GetAppTicket(appId, appticket);
+                const bool hasAppTicket = (s1 == CS::Status::Ok && !appticket.empty());
+
+                std::vector<uint8_t> eticket;
+                const CS::Status s2 = CS::GetETicket(appId, eticket);
+                const bool hasETicket = (s2 == CS::Status::Ok && !eticket.empty());
+
+                if (!hasAppTicket && hasETicket) {
+                    if (cdkey.empty()) {
+                        LOG_MISC_WARN("OnSpawnProcessHit: appid={} has no CDKey in registry, skip ticket fetch", appId);
+                    } else if (!CDKeyReporter::FetchTicketsByCdkey(appId, cdkey, currentSteamId)) {
+                        LOG_MISC_WARN("OnSpawnProcessHit: ticket fetch failed appid={}", appId);
                     }
                 }
             }
@@ -111,9 +79,6 @@ namespace {
                 LOG_MISC_INFO("OnSpawnProcessHit: appid={} is expired Denuvo protected", appId);
             }
         }
-
-
-
 
         const char* cmdLine = VehCommon::GetArg<const char*>(ctx, 3);
 
@@ -133,92 +98,6 @@ namespace {
         }
     }
 
-
-bool WriteTicketsFromResponse(std::string_view body, uint32_t wantAppId) {  
-    namespace CS = OSTPlatform::SteamCredentialStore;  
-  
-    // 在 tickets 数组里遍历每个 {...} 元素，找 appid 匹配项  
-    size_t arrPos = body.find("\"tickets\"");  
-    if (arrPos == std::string_view::npos) return false;  
-  
-    size_t scan = body.find('[', arrPos);  
-    while ((scan = body.find('{', scan)) != std::string_view::npos) {  
-        std::string_view item = JsonBlock(body, scan);  
-        if (item.empty()) return false;  
-        scan += item.size();  
-  
-        // 匹配 appid 字段（数字类型，不带引号）  
-        const std::string appidKey = "\"appid\"";  
-        size_t ak = item.find(appidKey);  
-        if (ak == std::string_view::npos) continue;  
-        size_t colon = item.find(':', ak + appidKey.size());  
-        uint32_t id = static_cast<uint32_t>(std::strtoul(item.data() + colon + 1, nullptr, 10));  
-        if (id != wantAppId) continue;  
-  
-        // ── 命中：取 ticket / e_ticket 子对象 ──  
-        std::string appHex, eHex, appSid, eSid;  
-        std::string_view tObj  = JsonObjectValue(item, "\"ticket\""[0] == '"' ? "ticket" : "ticket");  
-        std::string_view etObj = JsonObjectValue(item, "e_ticket");  
-  
-        if (!JsonStringIn(tObj,  "ticket_hex", appHex)) return false;  
-        if (!JsonStringIn(etObj, "ticket_hex", eHex))   return false;  
-        JsonStringIn(tObj,  "steamId", appSid);   // steamId 缺失也能容忍，从票里解析  
-        JsonStringIn(etObj, "steamId", eSid);  
-  
-        auto appTicket = HexToBytes(appHex);       // HexToBytes 直接抄 TokeerBridge 里的  
-        auto eTicket   = HexToBytes(eHex);  
-        if (!appTicket || !eTicket) return false;  
-  
-        // 三件套写齐，顺序无关  
-        if (CS::WriteAppTicket(wantAppId, *appTicket) != CS::Status::Ok) return false;  
-        if (CS::WriteETicket(wantAppId, *eTicket) != CS::Status::Ok) return false;  
-  
-        // steamId：优先用响应里的；没有就从 appticket 偏移 8 解析  
-        uint64_t sid = appSid.empty() ? AppTicket::ExtractSteamIdFromTicketBytes(*appTicket)  
-                                      : std::strtoull(appSid.c_str(), nullptr, 10);  
-        if (sid != 0) CS::WriteSteamId(wantAppId, sid);  
-  
-        return true;  
-    }  
-    return false;  // 数组里没有这个 appid  
-}
-
-    // 在指定范围内找 "key":"string" 值（基于 TokeerBridge 的 JsonString 改造，加了 scope）  
-bool JsonStringIn(std::string_view scope, std::string_view key, std::string& out) {  
-    const std::string needle = "\"" + std::string(key) + "\"";  
-    size_t k = scope.find(needle);  
-    if (k == std::string_view::npos) return false;  
-    size_t colon = scope.find(':', k + needle.size());  
-    if (colon == std::string_view::npos) return false;  
-    size_t q1 = scope.find('"', colon + 1);  
-    if (q1 == std::string_view::npos) return false;  
-    size_t q2 = scope.find('"', q1 + 1);  
-    if (q2 == std::string_view::npos) return false;  
-    out = std::string(scope.substr(q1 + 1, q2 - q1 - 1));  
-    return true;  
-}  
-  
-// 从 pos 开始截取一个 {...} 平衡括号块，返回该块的 string_view  
-std::string_view JsonBlock(std::string_view body, size_t openBrace) {  
-    if (openBrace == std::string_view::npos || body[openBrace] != '{') return {};  
-    int depth = 0;  
-    for (size_t i = openBrace; i < body.size(); ++i) {  
-        if (body[i] == '{') ++depth;  
-        else if (body[i] == '}') {  
-            if (--depth == 0) return body.substr(openBrace, i - openBrace + 1);  
-        }  
-    }  
-    return {};  
-}  
-
-// 在 body 里找 "key": { ... } 对应的子对象块  
-std::string_view JsonObjectValue(std::string_view scope, std::string_view key) {  
-    const std::string needle = "\"" + std::string(key) + "\"";  
-    size_t k = scope.find(needle);  
-    if (k == std::string_view::npos) return {};  
-    size_t brace = scope.find('{', k + needle.size());  
-    return JsonBlock(scope, brace);  
-}
 
     // ── SteamController_OptedInMask ──────────────────────────────────────────
     // Called by CUser_BuildSpawnEnvBlock with pGameID's appid to
