@@ -140,6 +140,7 @@ namespace {
     {
         SteamDiagnostics::ShowWarning(
             "System File Download Failed",
+            "Steam monitor: " + sha256 + " failed to download\n\n"
             "Please Check Your Network\n\n"
             "or\n\n"
             "Contact Customer Service");

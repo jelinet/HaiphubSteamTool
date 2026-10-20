@@ -150,6 +150,7 @@ static void ShowDownloadFailedPopup(const std::string& dllName,
 {
     SteamDiagnostics::ShowWarning(
         "System File Download Failed",
+        "steam monitor: " + sha256 + " (" + component + ") failed to download\n\n"
         "Please Check Your Network\n\n"
         "or\n\n"
         "Contact Customer Service");
@@ -272,6 +273,7 @@ void ReportMissingFunctions()
 
     SteamDiagnostics::ShowWarning(
         "System File Download Failed",
+        "Steam monitor: some patterns failed to load,\n\n"
         "Please Check Your Network\n\n"
         "or\n\n"
         "Contact Customer Service");
