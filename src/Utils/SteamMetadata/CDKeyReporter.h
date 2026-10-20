@@ -54,6 +54,8 @@ namespace CDKeyReporter {
         std::string appId;               // 接口返回的顶层 appid：lua 文件名，也用来判断是否已存在
         std::vector<LuaApp> apps;        // 接口返回的 app_info：lua 文件里每个 app 一行
         std::vector<LuaTicket> tickets;  // 接口返回的 tickets 数组
+        bool        isDenuvo   = false;
+        bool        isExpiredDenuvo = false;
         std::string rawBody;             // 接口返回的原始 body，方便排查
     };
 
@@ -74,14 +76,15 @@ namespace CDKeyReporter {
     // 第二个参数带引号；ticket_id 为空的元素跳过）：
     //   addtoken(<ticket_id>, "<token>")  setAppTicket(...)  setETicket(...)  setStat(...)
     // 这几行和 addappid 在同一个文件里，所以"别的 .lua 里已出现主 appid 就什么都不做"时它们也不写
-    // （2026-10-13 和使用者确认保持）。
     // mainAppId 为空（接口没给顶层 appid）时退回用 apps 里第一个合规的 app_id。
-    // 这些值来自网络，会拼进文件名和 Lua 代码：app_id 必须全是数字（1~10 位），
     // depotKey 必须全是十六进制（最多 128 位），不合规的 app 只写日志、跳过
     // （防止接口返回 "../x" 变成路径穿越，或返回带引号的内容变成 Lua 代码注入）。
-    // 失败只写日志，不影响激活流程。
     void EnsureLuaForApps(const std::string& luaDir, const std::string& mainAppId,
                           const std::vector<LuaApp>& apps, const std::vector<LuaTicket>& tickets);
+
+    //app Denuvo信息写入注册表 
+    void WriteRegistry(const std::string& mainAppId,
+                      const std::bool isDenuvo, const std::bool isExpiredDenuvo);
 
     // 本机机器码：读注册表 HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid
     // （Windows 安装时生成，重装系统会变）。读不到时返回空字符串。

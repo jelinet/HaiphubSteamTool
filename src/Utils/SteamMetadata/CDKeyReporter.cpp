@@ -3,7 +3,7 @@
 #include "OSTPlatform/include/Http.h"
 #include "Utils/Config/Config.h"
 #include "Utils/Logging/Log.h"
-
+#include "OSTPlatform/include/SteamCredentialStore.h"
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
@@ -298,10 +298,14 @@ CheckResponse CheckBeforeActivate(const std::string& key, uint64_t steamId) {
     }
     out.apps = ParseAppInfo(res.body);
     out.tickets = ParseTickets(res.body);
+    out.isDenuvo = false;
+    GetBool(res.body, "isDenuvo", out.isDenuvo);
+    out.isExpiredDenuvo = false;
+    GetBool(res.body, "isExpiredDenuvo", out.isExpiredDenuvo);
 
-    LOG_REGISTERCDKEY_DEBUG("CDKey check key={} eresult={} detail={} error_message={} appid={} apps={} tickets={}",
+    LOG_REGISTERCDKEY_DEBUG("CDKey check key={} eresult={} detail={} error_message={} appid={} apps={} tickets={} isDenuvo={} isExpiredDenuvo={}",
                        MaskKey(key), out.eresult, out.detail, out.errorMessage, out.appId, out.apps.size(),
-                       out.tickets.size());
+                       out.tickets.size(), out.isDenuvo, out.isExpiredDenuvo);
     return out;
 }
 
@@ -450,12 +454,24 @@ void EnsureLuaForApps(const std::string& luaDir, const std::string& mainAppId,
     // MOVEFILE_REPLACE_EXISTING），所以覆盖和新建走同一段代码；监视器看到的永远是完整的新内容。
     fs::rename(tmp, target, ec);
     if (ec) {
-        LOG_REGISTERCDKEY_DEBUG("CDKey lua: rename to {} failed ({})", target.string(), ec.message());
+        LOG_REGISTERCDKEY_ERROR("CDKey lua: rename to {} failed ({})", target.string(), ec.message());
         fs::remove(tmp, ec);
         return;
     }
-    LOG_REGISTERCDKEY_DEBUG("CDKey lua: {} {} ({} apps)",
+    LOG_REGISTERCDKEY_INFO("CDKey lua: {} {} ({} apps)",
                        overwrite ? "overwrote" : "created", target.string(), valid.size());
 }
+    //app Denuvo信息写入注册表 
+    void WriteRegistry(const std::string& mainAppId,
+                      const std::bool isDenuvo, const std::bool isExpiredDenuvo) {
+        const auto status = OSTPlatform::SteamCredentialStore::WriteDenuvoFlag(mainAppId,isDenuvo,isExpiredDenuvo);
+        if (status != OSTPlatform::SteamCredentialStore::Status::Ok) {
+            LOG_REGISTERCDKEY_ERROR("CDKey Failed to write DenuvoFlag for AppId {} isDenuvo{} isExpiredDenuvo{} to Registry: {}",
+                      mainAppId, OSTPlatform::SteamCredentialStore::ToString(status));
+            return;
+        }
+
+        LOG_REGISTERCDKEY_INFO("CDKey Successfully wrote DenuvoFlag for AppId {} isDenuvo{} isExpiredDenuvo{} to Registry", mainAppId, isDenuvo, isExpiredDenuvo);
+    }
 
 } // namespace CDKeyReporter

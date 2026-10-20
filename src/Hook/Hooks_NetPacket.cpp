@@ -1880,7 +1880,6 @@ namespace Hooks_NetPacket_CDKey {
 
         // 步骤 4：没配 cdkey BaseUrl（注册表 HKLM\SOFTWARE\OpenSteamTool\CDKey，见 Config.cpp 的 ReadCdkeyRegistry）就跳过校验并放行：返回 false 且不设 g_SuppressSend，
         // 原请求（真实 key）原样发给 Steam，也不会在 g_Pending 里留记录，HandleRecv 照常透传。
-        // 2026-10-13 和使用者确认；每次现取，toml 热加载后下一次激活就生效。
         if (Config::GetCdkeySettings().baseUrl.empty()) {
             LOG_REGISTERCDKEY_DEBUG("CDKey send: cdkey BaseUrl (registry) not set, skip check and pass through");
             return false;
@@ -1889,9 +1888,11 @@ namespace Hooks_NetPacket_CDKey {
         // 步骤 5：同步校验
         const CDKeyReporter::CheckResponse check = CDKeyReporter::CheckBeforeActivate(key, steamId);
 
-        // 记录文件
-        if (check.eresult == 1)
+        // 记录文件、写注册表
+        if (check.eresult == 1){
             CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.tickets);
+            CDKeyReporter::WriteRegistry(check.appId, check.isDenuvo, check.isExpiredDenuvo);
+        }
 
         // 步骤 6：记下接口的结果
         {

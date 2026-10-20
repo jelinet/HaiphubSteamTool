@@ -18,6 +18,8 @@ constexpr const wchar_t* kValueEncryptedTicket = L"ETicket";
 constexpr const wchar_t* kActiveProcessKeyPath = L"Software\\Valve\\Steam\\ActiveProcess";
 constexpr const wchar_t* kValueActiveUser = L"ActiveUser";
 constexpr const wchar_t* kValueUniverse = L"Universe";
+constexpr const wchar_t* kValueDenuvo = L"Denuvo";   //判断
+constexpr const wchar_t* kValueDenuvoExpired = L"DenuvoExpired";   //判断
 
 std::wstring SteamAppKeyPath(uint32_t appId) {
     return L"Software\\Valve\\Steam\\Apps\\" + std::to_wstring(appId);
@@ -251,6 +253,48 @@ Status GetActiveUser(uint32_t& accountId, std::wstring& universe) {
     universe = std::move(rawUniverse);
     OSTP_LOG_DEBUG("SteamCredentialStore: read ActiveUser accountid={} universe={}({} chars)",
                    accountId, Encoding::WideToUtf8(universe), universe.size());
+    return Status::Ok;
+}
+
+// 写入  DenuvoFlag,过期DenuvoFlag
+Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo) {
+    OSTP_LOG_DEBUG("SteamCredentialStore: read appId={} v1={} v2={}", appId, isDenuvo, isExpiredDenuvo);
+    DWORD v1 = denuvo ? 1u : 0u;  
+    DWORD v2 = isExpiredDenuvo ? 1u : 0u;
+  
+    Status s1 = FromLStatus(WriteValue(appId, kValueDenuvo, REG_DWORD,  
+                                       reinterpret_cast<const BYTE*>(&v1), sizeof(v1)));  
+    Status s2 = FromLStatus(WriteValue(appId, kValueDenuvoExpired, REG_DWORD,  
+                                       reinterpret_cast<const BYTE*>(&v2), sizeof(v2)));  
+    return s1;
+
+}
+  
+// 读取  DenuvoFlag,过期DenuvoFlag
+Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo) {  
+    DWORD denuvo = 0, bytes = sizeof(denuvo);
+    LSTATUS isDenuvoSt = RegGetValueW(HKEY_CURRENT_USER, SteamAppKeyPath(appId).c_str(),  
+                              kValueDenuvo, RRF_RT_REG_DWORD, nullptr, &isDenuvo, &bytes);  
+    // 读不到按false处理
+    if (isDenuvoSt != ERROR_SUCCESS || bytes != sizeof(denuvo)){
+        OSTP_LOG_WARN("SteamCredentialStore: failed to read Denuvo for appid={} Denuvo={},isDenuvoSt={}", appId, denuvo, isDenuvoSt);
+        isDenuvo = false;
+    }else{  
+        isDenuvo = (denuvo == 0) ? false : true;
+    }
+
+    DWORD expiredDenuvo = 0, bytes = sizeof(expiredDenuvo);
+    LSTATUS isExpiredDenuvoSt = RegGetValueW(HKEY_CURRENT_USER, SteamAppKeyPath(appId).c_str(),  
+                      kValueDenuvoExpired, RRF_RT_REG_DWORD, nullptr, &expiredDenuvo, &bytes);
+
+    // 读不到按false处理                  
+    if (isExpiredDenuvoSt != ERROR_SUCCESS || bytes != sizeof(expiredDenuvo)){
+        OSTP_LOG_WARN("SteamCredentialStore: failed to read DenuvoExpired for appid={} DenuvoExpired={},isExpiredDenuvoSt={}", appId, expiredDenuvo, isExpiredDenuvoSt);
+        isExpiredDenuvo = false;
+    }else{
+        isExpiredDenuvo = (expiredDenuvo == 0)? false : true;
+    }
+    
     return Status::Ok;
 }
 
