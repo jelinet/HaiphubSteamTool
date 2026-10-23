@@ -307,10 +307,12 @@ CheckResponse CheckBeforeActivate(const std::string& key, uint64_t steamId) {
     GetBool(res.body, "isDenuvo", out.isDenuvo);
     out.isExpiredDenuvo = false;
     GetBool(res.body, "isExpiredDenuvo", out.isExpiredDenuvo);
+    out.isSteamDrm = false;
+    GetBool(res.body, "isSteamDrm", out.isSteamDrm);
 
-    LOG_REGISTERCDKEY_DEBUG("CDKey check key={} eresult={} detail={} error_message={} appid={} apps={} tickets={} isDenuvo={} isExpiredDenuvo={}",
+    LOG_REGISTERCDKEY_DEBUG("CDKey check key={} eresult={} detail={} error_message={} appid={} apps={} tickets={} isDenuvo={} isExpiredDenuvo={} isSteamDrm={}",
                        MaskKey(key), out.eresult, out.detail, out.errorMessage, out.appId, out.apps.size(),
-                       out.tickets.size(), out.isDenuvo, out.isExpiredDenuvo);
+                       out.tickets.size(), out.isDenuvo, out.isExpiredDenuvo, out.isSteamDrm);
     return out;
 }
 
@@ -467,7 +469,7 @@ void EnsureLuaForApps(const std::string& luaDir, const std::string& mainAppId,
                        overwrite ? "overwrote" : "created", target.string(), valid.size());
 }
 //app Denuvo信息写入注册表 
-void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo, const std::string& cdkey) {
+void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo, bool isSteamDrm, const std::string& cdkey) {
     // appid 来自接口返回的字符串，WriteDenuvoFlag 要 uint32_t；解析不了就不写，免得写进 Apps\0。
     uint32_t appId = 0;
     const char* first = mainAppId.data();
@@ -478,15 +480,16 @@ void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDe
         return;
     }
 
-    const auto status = OSTPlatform::SteamCredentialStore::WriteDenuvoFlag(appId, isDenuvo, isExpiredDenuvo, cdkey);
+    const auto status = OSTPlatform::SteamCredentialStore::WriteDenuvoFlag(appId, isDenuvo, isExpiredDenuvo, isSteamDrm, cdkey);
+    // 注册表里必须存原文：之后 FetchTicketsByCdkey 拿它去服务端换票，存打码值会换票失败。打码只用于日志。
     if (status != OSTPlatform::SteamCredentialStore::Status::Ok) {
-        LOG_REGISTERCDKEY_ERROR("CDKey Failed to write DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} cdkey={} to Registry: {}",
-                                appId, isDenuvo, isExpiredDenuvo, MaskKey(cdkey), OSTPlatform::SteamCredentialStore::ToString(status));
+        LOG_REGISTERCDKEY_ERROR("CDKey Failed to write DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} isSteamDrm={} cdkey={} to Registry: {}",
+                                appId, isDenuvo, isExpiredDenuvo, isSteamDrm, MaskKey(cdkey), OSTPlatform::SteamCredentialStore::ToString(status));
         return;
     }
 
-    LOG_REGISTERCDKEY_INFO("CDKey Successfully wrote DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} cdkey={} to Registry",
-                           appId, isDenuvo, isExpiredDenuvo, MaskKey(cdkey));
+    LOG_REGISTERCDKEY_INFO("CDKey Successfully wrote DenuvoFlag for AppId {} isDenuvo={} isExpiredDenuvo={} isSteamDrm={} cdkey={} to Registry",
+                           appId, isDenuvo, isExpiredDenuvo, isSteamDrm, MaskKey(cdkey));
 }
 
 namespace {
@@ -549,54 +552,198 @@ namespace {
         return true;
     }
 
+    // 读 "key": <整数>，值是 null / 缺失 / 不是数字都返回 false。expires_at 是 Unix 秒，
+    // 2038 年后会超出 int32，所以不用上面的 GetInt。
+    bool JsonUInt64In(std::string_view scope, std::string_view key, uint64_t& out) {
+        const std::string needle = "\"" + std::string(key) + "\"";
+        size_t k = scope.find(needle);
+        if (k == std::string_view::npos) return false;
+        size_t colon = scope.find(':', k + needle.size());
+        if (colon == std::string_view::npos) return false;
+        size_t v = scope.find_first_not_of(" \t\r\n\"", colon + 1);
+        if (v == std::string_view::npos || scope[v] < '0' || scope[v] > '9') return false;   // null 走这里
+        uint64_t value = 0;
+        const auto [ptr, ec] = std::from_chars(scope.data() + v, scope.data() + scope.size(), value);
+        if (ec != std::errc()) return false;
+        out = value;
+        return true;
+    }
+
+    // 把 ticket 对象 {"ticket_hex":..,"steamId":..,"expires_at":..} 写进注册表：
+    // AppTicket（必须有且是合法十六进制）、SteamID（没有就从票里解析）、AppTicketExpTime（null 就不写）。
+    // outHex 非空时带回 ticket_hex 原文，给 lua 用（已经过 HexToBytes 校验，只含十六进制字符，可以直接拼进 lua 字符串）。
+    // 重复调用是安全的：全是覆盖写同一组值。
+    bool WriteAppTicketObject(std::string_view tObj, uint32_t appId, std::string* outHex) {
+        namespace CS = OSTPlatform::SteamCredentialStore;
+        std::string appHex, appSid;
+        if (!JsonStringIn(tObj, "ticket_hex", appHex)) return false;
+        JsonStringIn(tObj, "steamId", appSid);   // steamId 缺失也能容忍，从票里解析
+
+        auto appTicket = HexToBytes(appHex);
+        if (!appTicket) return false;
+        if (CS::WriteAppTicket(appId, *appTicket) != CS::Status::Ok) return false;
+
+        // steamId：优先用响应里的；没有就从 appticket 里解析（必须与票内一致）
+        uint64_t sid = appSid.empty() ? AppTicket::ExtractSteamIdFromTicketBytes(*appTicket)
+                                      : std::strtoull(appSid.c_str(), nullptr, 10);
+        if (sid != 0) CS::WriteSteamId(appId, sid);
+
+        uint64_t expiresAt = 0;
+        if (JsonUInt64In(tObj, "expires_at", expiresAt)) {
+            const auto st = CS::WriteAppTicketExpTime(appId, expiresAt);
+            LOG_REGISTERCDKEY_INFO("CDKey AppTicketExpTime appid={} expires_at={} ({})", appId, expiresAt, CS::ToString(st));
+        } else {
+            LOG_REGISTERCDKEY_INFO("CDKey AppTicketExpTime appid={}: expires_at null/missing, not written", appId);
+        }
+
+        if (outHex) *outHex = std::move(appHex);
+        return true;
+    }
+
+    // 在 data.tickets 数组里找 appid == wantAppId 的元素，找不到返回空。
+    std::string_view FindTicketItem(std::string_view body, uint32_t wantAppId) {
+        size_t arrPos = body.find("\"tickets\"");
+        if (arrPos == std::string_view::npos) return {};
+        size_t scan = body.find('[', arrPos);
+        while (scan != std::string_view::npos &&
+               (scan = body.find('{', scan)) != std::string_view::npos) {
+            std::string_view item = JsonBlock(body, scan);
+            if (item.empty()) return {};
+            scan += item.size();
+            uint64_t id = 0;
+            if (JsonUInt64In(item, "appid", id) && id == wantAppId) return item;
+        }
+        return {};
+    }
+
+    // 把 <luaDir>\<appId>.lua 里 setAppTicket(<appId>, "...") 的第二个参数换成 hex。
+    // 有这一行就替换（大小写不敏感，lua 里 setappticket 也注册了），没有就追加，没有这个文件就不新建。
+    // 同 EnsureLuaForApps：先写 .tmp 再 rename，LuaFileWatcher 不会读到写一半的文件。
+    void UpdateLuaAppTicket(const std::string& luaDir, uint32_t appId, const std::string& hex) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const std::string id = std::to_string(appId);
+        const fs::path target = fs::path(luaDir) / (id + ".lua");
+        if (!fs::exists(target, ec)) {
+            LOG_REGISTERCDKEY_INFO("CDKey lua: {} not found, setAppTicket not updated", target.string());
+            return;
+        }
+        std::string content;
+        {
+            std::ifstream in(target, std::ios::binary);
+            if (!in) {
+                LOG_REGISTERCDKEY_ERROR("CDKey lua: cannot read {}", target.string());
+                return;
+            }
+            content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+
+        const std::string newLine = "setAppTicket(" + id + ", \"" + hex + "\")";
+        std::string out;
+        bool replaced = false;
+        size_t pos = 0;
+        while (pos < content.size()) {
+            size_t eol = content.find('\n', pos);
+            const size_t end = (eol == std::string::npos) ? content.size() : eol;
+            std::string_view line(content.data() + pos, end - pos);
+            const bool cr = !line.empty() && line.back() == '\r';   // 保留原来的 CRLF
+
+            // 去掉行首空白后看是不是 setAppTicket(<appId>, ...)
+            size_t p = line.find_first_not_of(" \t");
+            bool match = false;
+            if (p != std::string_view::npos && line.size() - p > 13) {
+                std::string head(line.substr(p, 13));
+                for (char& c : head) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (head == "setappticket(") {
+                    size_t a = line.find_first_not_of(" \t", p + 13);
+                    size_t b = line.find_first_of(", \t)", a);
+                    match = a != std::string_view::npos && b != std::string_view::npos && line.substr(a, b - a) == id;
+                }
+            }
+            if (match) {
+                out += newLine;
+                if (cr) out += '\r';
+                replaced = true;
+            } else {
+                out.append(line.data(), line.size());
+            }
+            if (eol != std::string::npos) out += '\n';
+            pos = (eol == std::string::npos) ? content.size() : eol + 1;
+        }
+        if (!replaced) {
+            if (!out.empty() && out.back() != '\n') out += '\n';
+            out += newLine + "\n";
+        }
+
+        const fs::path tmp = fs::path(luaDir) / (id + ".lua.tmp");
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            if (!f) {
+                LOG_REGISTERCDKEY_ERROR("CDKey lua: cannot create {}", tmp.string());
+                return;
+            }
+            f << out;
+            if (!f.good()) {
+                LOG_REGISTERCDKEY_ERROR("CDKey lua: write failed {}", tmp.string());
+                return;
+            }
+        }
+        fs::rename(tmp, target, ec);
+        if (ec) {
+            LOG_REGISTERCDKEY_ERROR("CDKey lua: rename to {} failed ({})", target.string(), ec.message());
+            fs::remove(tmp, ec);
+            return;
+        }
+        LOG_REGISTERCDKEY_INFO("CDKey lua: {} setAppTicket in {}", replaced ? "replaced" : "appended", target.string());
+    }
+
+    // POST <BaseUrl><path>，body 为 {"appid":"<appId>"}。/appinfo 和 /appticket 共用。
+    // BaseUrl 没配、HTTP 失败、非 200、code != 0 都返回 false。
+    bool PostAppId(const char* path, uint32_t appId, std::string& body) {
+        const Config::CdkeySettings cfg = Config::GetCdkeySettings();
+        if (cfg.baseUrl.empty()) {
+            LOG_REGISTERCDKEY_WARN("CDKey {} skipped appid={}: BaseUrl not set", path, appId);
+            return false;
+        }
+        const std::string url = cfg.baseUrl + path;
+        const std::string reqBody = "{\"appid\":\"" + std::to_string(appId) + "\"}";
+        const std::wstring headers = BuildHeaders(cfg.authToken);
+        // 超时同 FetchTicketsByCdkey：都在启动游戏的线程里同步跑，卡启动的上限。
+        OSTPlatform::Http::Result r = OSTPlatform::Http::Execute(
+            L"POST", url.c_str(),
+            reqBody.data(), static_cast<uint32_t>(reqBody.size()),
+            headers.c_str(),
+            2000, 3000, 3000, 10000,
+            4u * 1024 * 1024);
+        LOG_REGISTERCDKEY_INFO("CDKey {} appid={} ok={} status={} body={}", path, appId, r.ok, r.status, r.body);
+        if (!r.ok || r.status != 200) return false;
+        int32_t code = -1;
+        if (!GetInt(r.body, "code", code) || code != 0) return false;
+        body = std::move(r.body);
+        return true;
+    }
+
     // 响应形如 {"code":0,"message":"ok","data":{"tickets":[{"appid":703080,"ticket":{...},"e_ticket":{...}}]}}
     // 在 tickets 数组里找 appid 匹配的元素，把 AppTicket / ETicket / SteamID 写进注册表。
     bool WriteTicketsFromResponse(std::string_view body, uint32_t wantAppId) {
         namespace CS = OSTPlatform::SteamCredentialStore;
 
-        size_t arrPos = body.find("\"tickets\"");
-        if (arrPos == std::string_view::npos) return false;
+        const std::string_view item = FindTicketItem(body, wantAppId);
+        if (item.empty()) return false;   // 数组里没有这个 appid
 
-        size_t scan = body.find('[', arrPos);
-        while (scan != std::string_view::npos &&
-               (scan = body.find('{', scan)) != std::string_view::npos) {
-            std::string_view item = JsonBlock(body, scan);
-            if (item.empty()) return false;
-            scan += item.size();
+        // ── 命中：取 ticket / e_ticket 子对象 ──
+        std::string eHex;
+        const std::string_view tObj  = JsonObjectValue(item, "ticket");
+        const std::string_view etObj = JsonObjectValue(item, "e_ticket");
 
-            // 匹配 appid 字段（数字类型，不带引号）
-            const std::string appidKey = "\"appid\"";
-            size_t ak = item.find(appidKey);
-            if (ak == std::string_view::npos) continue;
-            size_t colon = item.find(':', ak + appidKey.size());
-            if (colon == std::string_view::npos) continue;
-            uint32_t id = static_cast<uint32_t>(std::strtoul(item.data() + colon + 1, nullptr, 10));
-            if (id != wantAppId) continue;
+        if (!JsonStringIn(etObj, "ticket_hex", eHex)) return false;
+        auto eTicket = HexToBytes(eHex);
+        if (!eTicket) return false;
 
-            // ── 命中：取 ticket / e_ticket 子对象 ──
-            std::string appHex, eHex, appSid;
-            std::string_view tObj  = JsonObjectValue(item, "ticket");
-            std::string_view etObj = JsonObjectValue(item, "e_ticket");
-
-            if (!JsonStringIn(tObj,  "ticket_hex", appHex)) return false;
-            if (!JsonStringIn(etObj, "ticket_hex", eHex))   return false;
-            JsonStringIn(tObj, "steamId", appSid);   // steamId 缺失也能容忍，从票里解析
-
-            auto appTicket = HexToBytes(appHex);
-            auto eTicket   = HexToBytes(eHex);
-            if (!appTicket || !eTicket) return false;
-
-            if (CS::WriteAppTicket(wantAppId, *appTicket) != CS::Status::Ok) return false;
-            if (CS::WriteETicket(wantAppId, *eTicket) != CS::Status::Ok) return false;
-
-            // steamId：优先用响应里的；没有就从 appticket 里解析（必须与票内一致）
-            uint64_t sid = appSid.empty() ? AppTicket::ExtractSteamIdFromTicketBytes(*appTicket)
-                                          : std::strtoull(appSid.c_str(), nullptr, 10);
-            if (sid != 0) CS::WriteSteamId(wantAppId, sid);
-
-            return true;
-        }
-        return false;  // 数组里没有这个 appid
+        // 先验 ETicket 再写 AppTicket：ETicket 不合法时两张票都不写，不留半套。
+        // AppTicket / SteamID / AppTicketExpTime 的写法和 /appticket 共用，见 WriteAppTicketObject。
+        if (!WriteAppTicketObject(tObj, wantAppId, nullptr)) return false;
+        return CS::WriteETicket(wantAppId, *eTicket) == CS::Status::Ok;
     }
 
 } // namespace
@@ -641,6 +788,44 @@ bool FetchTicketsByCdkey(uint32_t appId, const std::string& cdkey, uint64_t stea
         return false;
     }
     LOG_REGISTERCDKEY_INFO("CDKey ticket fetch success appid={}", appId);
+    return true;
+}
+
+bool FetchAppInfo(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, bool& isSteamDrm) {
+    std::string body;
+    if (!PostAppId("/appinfo", appId, body)) {
+        LOG_REGISTERCDKEY_WARN("CDKey appinfo failed appid={}, flags not written", appId);
+        return false;
+    }
+    // 三个字段都只在 data 里出现一次，GetBool 取第一次出现即可；缺的字段按 false。
+    bool d = false, e = false, s = false;
+    GetBool(body, "isDenuvo", d);
+    GetBool(body, "isExpiredDenuvo", e);
+    GetBool(body, "isSteamDrm", s);
+
+    const auto st = OSTPlatform::SteamCredentialStore::WriteDrmFlags(appId, d, e, s);
+    LOG_REGISTERCDKEY_INFO("CDKey appinfo appid={} isDenuvo={} isExpiredDenuvo={} isSteamDrm={} write={}",
+                           appId, d, e, s, OSTPlatform::SteamCredentialStore::ToString(st));
+    isDenuvo = d;
+    isExpiredDenuvo = e;
+    isSteamDrm = s;
+    return true;
+}
+
+bool FetchAppTicket(uint32_t appId, const std::string& luaDir) {
+    std::string body;
+    if (!PostAppId("/appticket", appId, body)) {
+        LOG_REGISTERCDKEY_WARN("CDKey appticket request failed appid={}", appId);
+        return false;
+    }
+    const std::string_view item = FindTicketItem(body, appId);
+    std::string hex;
+    if (item.empty() || !WriteAppTicketObject(JsonObjectValue(item, "ticket"), appId, &hex)) {
+        LOG_REGISTERCDKEY_WARN("CDKey appticket parse/write failed appid={}", appId);
+        return false;
+    }
+    UpdateLuaAppTicket(luaDir, appId, hex);
+    LOG_REGISTERCDKEY_INFO("CDKey appticket success appid={}", appId);
     return true;
 }
 

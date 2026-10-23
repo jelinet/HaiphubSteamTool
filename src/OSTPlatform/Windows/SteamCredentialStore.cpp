@@ -14,12 +14,14 @@ namespace {
 
 constexpr const wchar_t* kValueSteamId = L"SteamID";
 constexpr const wchar_t* kValueAppTicket = L"AppTicket";
+constexpr const wchar_t* kValueAppTicketExpTime = L"AppTicketExpTime";
 constexpr const wchar_t* kValueEncryptedTicket = L"ETicket";
 constexpr const wchar_t* kActiveProcessKeyPath = L"Software\\Valve\\Steam\\ActiveProcess";
 constexpr const wchar_t* kValueActiveUser = L"ActiveUser";
 constexpr const wchar_t* kValueUniverse = L"Universe";
 constexpr const wchar_t* kValueDenuvo = L"Denuvo";   //判断
 constexpr const wchar_t* kValueDenuvoExpired = L"DenuvoExpired";   //判断
+constexpr const wchar_t* kValueSteamDrm = L"SteamDrm";   //判断
 constexpr const wchar_t* kValueCDKey = L"CDKey";   //判断
 
 std::wstring SteamAppKeyPath(uint32_t appId) {
@@ -32,6 +34,11 @@ const char* ValueNameForLog(PCWSTR valueName) {
     if (valueName == kValueEncryptedTicket) return "ETicket";
     if (valueName == kValueActiveUser) return "ActiveUser";
     if (valueName == kValueUniverse) return "Universe";
+    if (valueName == kValueDenuvo) return "Denuvo";
+    if (valueName == kValueDenuvoExpired) return "DenuvoExpired";
+    if (valueName == kValueSteamDrm) return "SteamDrm";
+    if (valueName == kValueCDKey) return "CDKey";
+    if (valueName == kValueAppTicketExpTime) return "AppTicketExpTime";
     return "?";
 }
 
@@ -259,31 +266,31 @@ Status GetActiveUser(uint32_t& accountId, std::wstring& universe) {
 
 
 // 写入 DenuvoFlag, 过期DenuvoFlag
-Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo, const std::string& cdkey) {
-    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} Denuvo={} DenuvoExpired={}",
-                   appId, isDenuvo, isExpiredDenuvo);
+Status WriteDenuvoFlag(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo, bool isSteamDrm, const std::string& cdkey) {
+    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} Denuvo={} DenuvoExpired={} SteamDrm={}",
+                   appId, isDenuvo, isExpiredDenuvo, isSteamDrm);
     DWORD v1 = isDenuvo ? 1u : 0u;  
     DWORD v2 = isExpiredDenuvo ? 1u : 0u;  
-  
+    DWORD v3 = isSteamDrm ? 1u : 0u;  
+
     Status s1 = FromLStatus(WriteValue(appId, kValueDenuvo, REG_DWORD,
                                        reinterpret_cast<const BYTE*>(&v1), sizeof(v1)));  
     Status s2 = FromLStatus(WriteValue(appId, kValueDenuvoExpired, REG_DWORD,  
                                        reinterpret_cast<const BYTE*>(&v2), sizeof(v2)));
+    Status s3 = FromLStatus(WriteValue(appId, kValueSteamDrm, REG_DWORD,  
+                                       reinterpret_cast<const BYTE*>(&v3), sizeof(v3)));                                   
     const std::wstring wideKey = Encoding::Utf8ToWide(cdkey);
-    Status s3 = FromLStatus(WriteValue(appId, kValueCDKey, REG_SZ,
+    Status s4 = FromLStatus(WriteValue(appId, kValueCDKey, REG_SZ,
                                        reinterpret_cast<const BYTE*>(wideKey.c_str()),
                                        static_cast<DWORD>((wideKey.size() + 1) * sizeof(wchar_t))));
     // 日志里不打 cdkey 原文（明文 key 进日志等于泄露）。
-    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} status1={} status2={} status3={}",
-                   appId, ToString(s1), ToString(s2), ToString(s3));
-    // 三个值都写成功才算 Ok，返回第一个失败的状态。
-    if (s1 != Status::Ok) return s1;
-    if (s2 != Status::Ok) return s2;
-    return s3;
+    OSTP_LOG_DEBUG("SteamCredentialStore: write appId={} status1={} status2={} status3={} status4={}",
+                   appId, ToString(s1), ToString(s2), ToString(s3), ToString(s4));
+    return Status::Ok;
 }
   
 // 读取  DenuvoFlag,过期DenuvoFlag
-Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, std::string& cdkey) {
+Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, bool& isSteamDrm, std::string& cdkey) {
     OSTP_LOG_DEBUG("SteamCredentialStore: read GetDenuvoFlag appId={}", appId); 
     const std::wstring keyPath = SteamAppKeyPath(appId);
     DWORD denuvo = 0, bytes = sizeof(denuvo);  
@@ -307,6 +314,18 @@ Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, std:
         isExpiredDenuvo = (expired != 0);  
     }
 
+    DWORD steamDrm = 0;  
+    bytes = sizeof(steamDrm);// 复用 bytes，不要重新定义  
+    LSTATUS s3 = RegGetValueW(HKEY_CURRENT_USER, keyPath.c_str(),  
+                              kValueSteamDrm, RRF_RT_REG_DWORD, nullptr,  
+                              &steamDrm, &bytes);  
+    if (s3 != ERROR_SUCCESS || bytes != sizeof(steamDrm)) {  
+        isSteamDrm = false;  
+    } else {  
+        isSteamDrm = (steamDrm != 0);  
+    }
+
+
     // 读字符串  
     wchar_t buf[512]{};// 自动零初始化  
     DWORD keyBytes = sizeof(buf);  // 不能再叫 bytes：上面已经定义过同名变量
@@ -320,6 +339,51 @@ Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, std:
     }  
   
     return Status::Ok;  
+}
+
+bool HasDrmFlags(uint32_t appId) {
+    const std::wstring keyPath = SteamAppKeyPath(appId);
+    for (PCWSTR name : {kValueDenuvo, kValueDenuvoExpired, kValueSteamDrm}) {
+        // 只问存不存在：pvData 传 nullptr，RegGetValueW 只返回状态。
+        if (RegGetValueW(HKEY_CURRENT_USER, keyPath.c_str(), name, RRF_RT_REG_DWORD,
+                         nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+            return true;
+    }
+    return false;
+}
+
+Status WriteDrmFlags(uint32_t appId, bool isDenuvo, bool isExpiredDenuvo, bool isSteamDrm) {
+    const DWORD v1 = isDenuvo ? 1u : 0u;
+    const DWORD v2 = isExpiredDenuvo ? 1u : 0u;
+    const DWORD v3 = isSteamDrm ? 1u : 0u;
+    const Status s1 = FromLStatus(WriteValue(appId, kValueDenuvo, REG_DWORD,
+                                             reinterpret_cast<const BYTE*>(&v1), sizeof(v1)));
+    const Status s2 = FromLStatus(WriteValue(appId, kValueDenuvoExpired, REG_DWORD,
+                                             reinterpret_cast<const BYTE*>(&v2), sizeof(v2)));
+    const Status s3 = FromLStatus(WriteValue(appId, kValueSteamDrm, REG_DWORD,
+                                             reinterpret_cast<const BYTE*>(&v3), sizeof(v3)));
+    OSTP_LOG_DEBUG("SteamCredentialStore: write drm flags appId={} Denuvo={} DenuvoExpired={} SteamDrm={} status={}/{}/{}",
+                   appId, isDenuvo, isExpiredDenuvo, isSteamDrm, ToString(s1), ToString(s2), ToString(s3));
+    if (s1 != Status::Ok) return s1;
+    if (s2 != Status::Ok) return s2;
+    return s3;
+}
+
+Status GetAppTicketExpTime(uint32_t appId, uint64_t& expiresAt) {
+    const std::wstring keyPath = SteamAppKeyPath(appId);
+    ULONGLONG value = 0;
+    DWORD bytes = sizeof(value);
+    const LSTATUS status = RegGetValueW(HKEY_CURRENT_USER, keyPath.c_str(), kValueAppTicketExpTime,
+                                        RRF_RT_REG_QWORD, nullptr, &value, &bytes);
+    if (status != ERROR_SUCCESS) return FromLStatus(status);
+    expiresAt = static_cast<uint64_t>(value);
+    return Status::Ok;
+}
+
+Status WriteAppTicketExpTime(uint32_t appId, uint64_t expiresAt) {
+    const ULONGLONG value = static_cast<ULONGLONG>(expiresAt);
+    return FromLStatus(WriteValue(appId, kValueAppTicketExpTime, REG_QWORD,
+                                  reinterpret_cast<const BYTE*>(&value), sizeof(value)));
 }
 
 } // namespace OSTPlatform::SteamCredentialStore

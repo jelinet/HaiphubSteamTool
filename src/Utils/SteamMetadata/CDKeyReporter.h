@@ -56,6 +56,7 @@ namespace CDKeyReporter {
         std::vector<LuaTicket> tickets;  // 接口返回的 tickets 数组
         bool        isDenuvo   = false;
         bool        isExpiredDenuvo = false;
+        bool        isSteamDrm = false;
         std::string rawBody;             // 接口返回的原始 body，方便排查
     };
 
@@ -84,7 +85,7 @@ namespace CDKeyReporter {
 
     //app Denuvo信息写入注册表 
     // mainAppId 不是 1~10 位纯数字（或超出 uint32）时只写日志、不写注册表。
-    void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo, const std::string& cdkey);
+    void WriteRegistry(const std::string& mainAppId, bool isDenuvo, bool isExpiredDenuvo, bool isSteamDrm, const std::string& cdkey);
 
     // 启动 Denuvo 游戏时本地缺 AppTicket，就拿激活时记下的 cdkey 去 <BaseUrl>/getTicketByCdkey 换票，
     // 成功后把 AppTicket / ETicket / SteamID 写进 HKCU\Software\Valve\Steam\Apps\<appId>。
@@ -92,6 +93,18 @@ namespace CDKeyReporter {
     // 响应里没有这个 appid 或票不是合法十六进制时返回 false，只写日志。
     // （2026-10-21 从 Hooks_Misc.cpp 挪过来：要用本文件里的 JsonEscape / BuildHeaders，它们不对外。）
     bool FetchTicketsByCdkey(uint32_t appId, const std::string& cdkey, uint64_t steamId);
+
+    // 兜底：注册表里三个 DRM 标记都没有时（正常应在 /cdkeycheck 成功后由 WriteRegistry 写好），
+    // POST <BaseUrl>/appinfo {"appid":"<appId>"}，把 data.isDenuvo / isExpiredDenuvo / isSteamDrm
+    // 写进注册表（不碰 CDKey）并通过出参返回。HTTP 非 200 或 code != 0 返回 false，不写注册表、出参不改。
+    bool FetchAppInfo(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, bool& isSteamDrm);
+
+    // SteamDrm 游戏换票：POST <BaseUrl>/appticket {"appid":"<appId>"}，把 ticket.ticket_hex 写进 AppTicket、
+    // ticket.steamId 写进 SteamID、ticket.expires_at 写进 AppTicketExpTime（null 就不写），ETicket 不动；
+    // 然后把 <luaDir>\<appId>.lua 里 setAppTicket(<appId>, "...") 的第二个参数换成新票
+    // （有这一行就替换，没有就追加，没有这个文件就不新建——2026-10-24 和使用者确认）。
+    // 要改 lua 是因为 lua 加载时 setAppTicket 会把票写回注册表，不改的话下次 lua 重载会用旧票覆盖新票。
+    bool FetchAppTicket(uint32_t appId, const std::string& luaDir);
 
     // 本机机器码：读注册表 HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid
     // （Windows 安装时生成，重装系统会变）。读不到时返回空字符串。

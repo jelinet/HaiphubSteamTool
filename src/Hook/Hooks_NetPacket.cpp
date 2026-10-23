@@ -1891,7 +1891,7 @@ namespace Hooks_NetPacket_CDKey {
         // 记录文件、写注册表
         if (check.eresult == 1){
             CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.tickets);
-            CDKeyReporter::WriteRegistry(check.appId, check.isDenuvo, check.isExpiredDenuvo, key);
+            CDKeyReporter::WriteRegistry(check.appId, check.isDenuvo, check.isExpiredDenuvo, check.isSteamDrm, key);
         }
 
         // 步骤 6：记下接口的结果

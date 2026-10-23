@@ -6,6 +6,7 @@
 #include "Utils/SteamMetadata/CDKeyReporter.h"
 #include "Utils/Config/Config.h"
 
+#include <ctime>
 #include <thread>
 
 namespace {
@@ -55,13 +56,21 @@ namespace {
         //读取注册表，判断游戏
         bool isDenuvo = false;
         bool isExpiredDenuvo = false;
+        bool isSteamDrm = false;
         std::string cdkey;
-        const auto status = CS::GetDenuvoFlag(appId, isDenuvo, isExpiredDenuvo, cdkey);
+        const auto status = CS::GetDenuvoFlag(appId, isDenuvo, isExpiredDenuvo, isSteamDrm, cdkey);
         if (status != CS::Status::Ok) {
             LOG_MISC_INFO("OnSpawnProcessHit read Denuvo flag failed ({})", CS::ToString(status));
         } else {
-            LOG_MISC_INFO("OnSpawnProcessHit read Denuvo flag for appid={} isDenuvo={} isExpiredDenuvo={} cdkey={}",
-                          appId, isDenuvo, isExpiredDenuvo, cdkey);
+            LOG_MISC_INFO("OnSpawnProcessHit read Denuvo flag for appid={} isDenuvo={} isExpiredDenuvo={} isSteamDrm={} cdkey={}",
+                          appId, isDenuvo, isExpiredDenuvo, isSteamDrm, cdkey);
+            // 兜底：三个标记都没写过（正常在 /cdkeycheck 成功后由 WriteRegistry 写好），问一次 /appinfo。
+            // 成功会写进注册表，下次启动就不再请求；失败按三个 false 处理，下次启动再试。
+            if (!CS::HasDrmFlags(appId)) {
+                const bool got = CDKeyReporter::FetchAppInfo(appId, isDenuvo, isExpiredDenuvo, isSteamDrm);
+                LOG_MISC_INFO("OnSpawnProcessHit: appid={} no drm flags in registry, appinfo={} isDenuvo={} isExpiredDenuvo={} isSteamDrm={}",
+                              appId, got, isDenuvo, isExpiredDenuvo, isSteamDrm);
+            }
             //加密的appid，缺 AppTicket 时用激活时记下的 cdkey 去服务端换票
             if (isDenuvo) {
                 LOG_MISC_INFO("OnSpawnProcessHit: appid={} is Denuvo protected", appId);
@@ -88,9 +97,28 @@ namespace {
                 }else {
                     LOG_MISC_INFO("OnSpawnProcessHit: appid={} has both AppTicket and ETicket, skip ticket fetch", appId);
                 }
-            }
-            if (isExpiredDenuvo) {
+            }else if (isExpiredDenuvo) {
                 LOG_MISC_INFO("OnSpawnProcessHit: appid={} is expired Denuvo protected", appId);
+            }else if (isSteamDrm) {
+                LOG_MISC_INFO("OnSpawnProcessHit: appid={} is Steam DRM protected", appId);
+                std::vector<uint8_t> appticket;
+                const CS::Status s1 = CS::GetAppTicket(appId, appticket);
+                const bool hasAppTicket = (s1 == CS::Status::Ok && !appticket.empty());
+
+                // 离过期不到 8 小时就提前换票（2026-10-24 和使用者确认）；没有过期时间（旧数据）也换。
+                constexpr int64_t kRefreshBeforeExpirySec = 8 * 60 * 60;
+                uint64_t expiresAt = 0;
+                const bool hasExpTime = CS::GetAppTicketExpTime(appId, expiresAt) == CS::Status::Ok;
+                const int64_t now = static_cast<int64_t>(std::time(nullptr));
+                const int64_t remaining = hasExpTime ? static_cast<int64_t>(expiresAt) - now : 0;
+                const bool needFetch = !hasAppTicket || !hasExpTime || remaining < kRefreshBeforeExpirySec;
+
+                LOG_MISC_INFO("OnSpawnProcessHit: SteamDrm appid={} hasAppTicket={} ({} bytes) expiresAt={} remaining={}s needFetch={}",
+                              appId, hasAppTicket, appticket.size(), expiresAt, remaining, needFetch);
+                if (needFetch) {
+                    const bool fetched = CDKeyReporter::FetchAppTicket(appId, std::string(LuaDir));
+                    LOG_MISC_INFO("OnSpawnProcessHit: appticket fetch appid={} fetched={}", appId, fetched);
+                }
             }
         }
     //}).detach();
