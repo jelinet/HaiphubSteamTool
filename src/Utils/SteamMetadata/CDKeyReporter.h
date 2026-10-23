@@ -100,7 +100,7 @@ namespace CDKeyReporter {
     bool FetchAppInfo(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, bool& isSteamDrm);
 
     // SteamDrm 游戏换票：POST <BaseUrl>/appticket {"appid":"<appId>"}，把 ticket.ticket_hex 写进 AppTicket、
-    // ticket.steamId 写进 SteamID、ticket.expires_at 写进 AppTicketExpTime（null 就不写），ETicket 不动；
+    // ticket.expires_at 写进 AppTicketExpTime（null 就不写），SteamID 和 ETicket 都不动；
     // 然后把 <luaDir>\<appId>.lua 里 setAppTicket(<appId>, "...") 的第二个参数换成新票
     // （有这一行就替换，没有就追加，没有这个文件就不新建——2026-10-24 和使用者确认）。
     // 要改 lua 是因为 lua 加载时 setAppTicket 会把票写回注册表，不改的话下次 lua 重载会用旧票覆盖新票。

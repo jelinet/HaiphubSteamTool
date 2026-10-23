@@ -570,23 +570,28 @@ namespace {
     }
 
     // 把 ticket 对象 {"ticket_hex":..,"steamId":..,"expires_at":..} 写进注册表：
-    // AppTicket（必须有且是合法十六进制）、SteamID（没有就从票里解析）、AppTicketExpTime（null 就不写）。
+    // AppTicket（必须有且是合法十六进制）、SteamID（writeSteamId 为 true 时；没有就从票里解析）、
+    // AppTicketExpTime（null 就不写）。
+    // writeSteamId：/getTicketByCdkey（Denuvo）写；/appticket（SteamDrm）不写（2026-10-24 使用者要求）。
     // outHex 非空时带回 ticket_hex 原文，给 lua 用（已经过 HexToBytes 校验，只含十六进制字符，可以直接拼进 lua 字符串）。
     // 重复调用是安全的：全是覆盖写同一组值。
-    bool WriteAppTicketObject(std::string_view tObj, uint32_t appId, std::string* outHex) {
+    bool WriteAppTicketObject(std::string_view tObj, uint32_t appId, bool writeSteamId, std::string* outHex) {
         namespace CS = OSTPlatform::SteamCredentialStore;
-        std::string appHex, appSid;
+        std::string appHex;
         if (!JsonStringIn(tObj, "ticket_hex", appHex)) return false;
-        JsonStringIn(tObj, "steamId", appSid);   // steamId 缺失也能容忍，从票里解析
 
         auto appTicket = HexToBytes(appHex);
         if (!appTicket) return false;
         if (CS::WriteAppTicket(appId, *appTicket) != CS::Status::Ok) return false;
 
-        // steamId：优先用响应里的；没有就从 appticket 里解析（必须与票内一致）
-        uint64_t sid = appSid.empty() ? AppTicket::ExtractSteamIdFromTicketBytes(*appTicket)
-                                      : std::strtoull(appSid.c_str(), nullptr, 10);
-        if (sid != 0) CS::WriteSteamId(appId, sid);
+        if (writeSteamId) {
+            // steamId：优先用响应里的；没有就从 appticket 里解析（必须与票内一致）
+            std::string appSid;
+            JsonStringIn(tObj, "steamId", appSid);
+            uint64_t sid = appSid.empty() ? AppTicket::ExtractSteamIdFromTicketBytes(*appTicket)
+                                          : std::strtoull(appSid.c_str(), nullptr, 10);
+            if (sid != 0) CS::WriteSteamId(appId, sid);
+        }
 
         uint64_t expiresAt = 0;
         if (JsonUInt64In(tObj, "expires_at", expiresAt)) {
@@ -742,7 +747,7 @@ namespace {
 
         // 先验 ETicket 再写 AppTicket：ETicket 不合法时两张票都不写，不留半套。
         // AppTicket / SteamID / AppTicketExpTime 的写法和 /appticket 共用，见 WriteAppTicketObject。
-        if (!WriteAppTicketObject(tObj, wantAppId, nullptr)) return false;
+        if (!WriteAppTicketObject(tObj, wantAppId, /*writeSteamId=*/true, nullptr)) return false;
         return CS::WriteETicket(wantAppId, *eTicket) == CS::Status::Ok;
     }
 
@@ -820,7 +825,7 @@ bool FetchAppTicket(uint32_t appId, const std::string& luaDir) {
     }
     const std::string_view item = FindTicketItem(body, appId);
     std::string hex;
-    if (item.empty() || !WriteAppTicketObject(JsonObjectValue(item, "ticket"), appId, &hex)) {
+    if (item.empty() || !WriteAppTicketObject(JsonObjectValue(item, "ticket"), appId, /*writeSteamId=*/false, &hex)) {
         LOG_REGISTERCDKEY_WARN("CDKey appticket parse/write failed appid={}", appId);
         return false;
     }
