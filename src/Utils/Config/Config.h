@@ -47,6 +47,9 @@ namespace Config {
     LoadResult Load(const std::string& configPath);
 
     ManifestTimeouts GetManifestTimeouts();
+    // [manifest] auto：true = 按 20770407 → SDM → wudrm → steamrun 依次试，成功就停；
+    // false（默认）= 只用 url 选定的一个。见 ManifestClient.cpp 的 FetchManifestRequestCode。
+    bool GetManifestAuto();
     LogLevel GetLogLevel();
     std::string GetLogDir();
     std::vector<std::string> GetLuaPaths();
@@ -73,6 +76,7 @@ namespace Config {
     inline uint32_t manifestTimeoutConnect = 5000;
     inline uint32_t manifestTimeoutSend    = 10000;
     inline uint32_t manifestTimeoutRecv    = 10000;
+    inline bool     manifestAuto           = false;
 
     // [log]
     inline LogLevel logLevel = LogLevel::Debug;

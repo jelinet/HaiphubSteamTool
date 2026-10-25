@@ -24,6 +24,7 @@ namespace {
     struct Snapshot {
         std::string manifestProvider = "20770407";   // 2026-10-26 替换 opensteamtool，见 ManifestClient.cpp 的 kProviders
         ManifestTimeouts manifestTimeouts;
+        bool manifestAuto = false;   // 默认 false：老配置行为不变（2026-10-26 和使用者确认）
         LogLevel logLevel = LogLevel::Debug;
         std::string logDir;
         std::vector<std::string> luaPaths;
@@ -62,6 +63,7 @@ namespace {
         manifestTimeoutConnect = snapshot.manifestTimeouts.connect;
         manifestTimeoutSend    = snapshot.manifestTimeouts.send;
         manifestTimeoutRecv    = snapshot.manifestTimeouts.recv;
+        manifestAuto           = snapshot.manifestAuto;
         logLevel               = snapshot.logLevel;
         logDir                 = snapshot.logDir;
         luaPaths               = snapshot.luaPaths;
@@ -180,6 +182,8 @@ namespace {
                     snapshot.manifestTimeouts.send = static_cast<uint32_t>(*val);
                 if (auto val = (*manifest)["timeout_recv_ms"].value<int64_t>())
                     snapshot.manifestTimeouts.recv = static_cast<uint32_t>(*val);
+                if (auto val = (*manifest)["auto"].value<bool>())
+                    snapshot.manifestAuto = *val;
             }
 
             // [log]
@@ -339,6 +343,11 @@ namespace {
             manifestTimeoutSend,
             manifestTimeoutRecv,
         };
+    }
+
+    bool GetManifestAuto() {
+        std::lock_guard lock(g_mutex);
+        return manifestAuto;
     }
 
     LogLevel GetLogLevel() {

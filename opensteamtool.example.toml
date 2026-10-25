@@ -47,7 +47,15 @@ level = "debug"
 # end
 url = "20770407"
 
-# HTTP timeouts for manifest requests (milliseconds).
+# auto = true  → ignore `url`, try 20770407 → SDM → wudrm → steamrun in order and
+#                stop at the first success (providers that need a depot are skipped
+#                when the depot is unknown). Each provider gets at most 10 s
+#                (resolve 2 s + connect 3 s + send 2 s + recv 3 s); the
+#                timeout_* values below are NOT used in this mode.
+# auto = false → use only the provider named by `url` (default).
+auto = false
+
+# HTTP timeouts for manifest requests (milliseconds). Only used when auto = false.
 # timeout_resolve_ms  — DNS resolution        (default: 5000)
 # timeout_connect_ms  — TCP handshake          (default: 5000)
 # timeout_send_ms     — request transmission   (default: 10000)

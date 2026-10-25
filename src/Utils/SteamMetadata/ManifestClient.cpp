@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <iterator>
 #include <mutex>
 #include <string_view>
 
@@ -113,10 +114,14 @@ namespace ManifestClient {
 
     // ── fetch ─────────────────────────────────────────────────────
 
-    static bool FetchActive(uint64_t gid, uint64_t* outCode, AppId_t appId, AppId_t depotId) {
-        const Provider& p = *g_active;
-        const Config::ManifestTimeouts timeouts = Config::GetManifestTimeouts();
+    // auto 模式每个接口的超时：四个阶段加起来 10 秒（2+3+2+3），不读 [manifest] timeout_*
+    // （2026-10-26 和使用者确认）。没选"每阶段各 10 秒"：那样单个接口最坏 40 秒，四个全挂要等 160 秒。
+    static constexpr Config::ManifestTimeouts kAutoTimeouts{2000, 3000, 2000, 3000};
 
+    // 用 provider p 请求一次。tryIndex / tryTotal 只用于日志（auto 模式标"第几个"，单选模式传 1/1）。
+    static bool FetchFrom(const Provider& p, const Config::ManifestTimeouts& timeouts,
+                          size_t tryIndex, size_t tryTotal,
+                          uint64_t gid, uint64_t* outCode, AppId_t appId, AppId_t depotId) {
         // 当前 provider 的路径只有 depot/gid 两段，app 不进 URL；appId 只用于日志。
         char url[256];
         const bool depotAware = p.urlTemplateEx && depotId;
@@ -126,13 +131,14 @@ namespace ManifestClient {
             std::snprintf(url, sizeof(url), p.urlTemplate, gid);
         } else {
             // 20770407 / SDM 没有 gid-only 路径；不知道 depot 就没法请求。
-            LOG_MANIFEST_WARN("Manifest name={} needs depot but depot=0, app={} gid={}: not requested",
-                              p.name, appId, gid);
+            LOG_MANIFEST_WARN("Manifest try {}/{} name={} needs depot but depot=0, app={} gid={}: skipped",
+                              tryIndex, tryTotal, p.name, appId, gid);
             return false;
         }
 
-        LOG_MANIFEST_INFO("Manifest name={} url={} app={} depot={} gid={} shape={}",
-                          p.name, url, appId, depotId, gid, depotAware ? "depot/gid" : "gid-only");
+        LOG_MANIFEST_INFO("Manifest try {}/{} name={} url={} app={} depot={} gid={} shape={}",
+                          tryIndex, tryTotal, p.name, url, appId, depotId, gid,
+                          depotAware ? "depot/gid" : "gid-only");
 
         auto r = OSTPlatform::Http::Execute(
             L"GET",
@@ -183,6 +189,23 @@ namespace ManifestClient {
             LOG_MANIFEST_WARN("Manifest gid={} lua returned nil, falling back to config", manifestGid);
         }
 
-        return FetchActive(manifestGid, outRequestCode, appId, depotId);
+        if (!Config::GetManifestAuto())
+            return FetchFrom(*g_active, Config::GetManifestTimeouts(), 1, 1,
+                             manifestGid, outRequestCode, appId, depotId);
+
+        // auto = true：按 kProviders 的顺序（20770407 → SDM → wudrm → steamrun）逐个试，成功就停。
+        // 每次都从第一个开始，不记住上次成功的接口（2026-10-26 和使用者确认）。
+        // 每个请求都是只读 GET，换下一个重试不会有副作用。
+        constexpr size_t total = std::size(kProviders);
+        for (size_t i = 0; i < total; ++i) {
+            if (FetchFrom(kProviders[i], kAutoTimeouts, i + 1, total,
+                          manifestGid, outRequestCode, appId, depotId)) {
+                LOG_MANIFEST_INFO("Manifest gid={} resolved by {} (auto, try {}/{})",
+                                  manifestGid, kProviders[i].name, i + 1, total);
+                return true;
+            }
+        }
+        LOG_MANIFEST_WARN("Manifest gid={} depot={} all {} providers failed (auto)", manifestGid, depotId, total);
+        return false;
     }
 }
