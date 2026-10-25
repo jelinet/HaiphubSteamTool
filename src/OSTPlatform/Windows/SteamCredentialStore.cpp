@@ -329,10 +329,11 @@ Status GetDenuvoFlag(uint32_t appId, bool& isDenuvo, bool& isExpiredDenuvo, bool
     // 读字符串  
     wchar_t buf[512]{};// 自动零初始化  
     DWORD keyBytes = sizeof(buf);  // 不能再叫 bytes：上面已经定义过同名变量
-    LSTATUS s3 = RegGetValueW(HKEY_CURRENT_USER, keyPath.c_str(),  
-                              kValueCDKey,  
-                              RRF_RT_REG_SZ, nullptr, buf, &keyBytes);  
-    if (s3 != ERROR_SUCCESS || keyBytes < sizeof(wchar_t)) {  
+    // s4：s3 已被上面的 SteamDrm 读取占用，同名会 C2374。
+    LSTATUS s4 = RegGetValueW(HKEY_CURRENT_USER, keyPath.c_str(),
+                              kValueCDKey,
+                              RRF_RT_REG_SZ, nullptr, buf, &keyBytes);
+    if (s4 != ERROR_SUCCESS || keyBytes < sizeof(wchar_t)) {
         cdkey.clear();// 读不到 = 空串  
     } else {  
         cdkey = Encoding::WideToUtf8(buf);// buf 保证 null 结尾  
