@@ -22,7 +22,7 @@ namespace Config {
 namespace {
 
     struct Snapshot {
-        std::string manifestProvider = "opensteamtool";
+        std::string manifestProvider = "20770407";   // 2026-10-26 替换 opensteamtool，见 ManifestClient.cpp 的 kProviders
         ManifestTimeouts manifestTimeouts;
         LogLevel logLevel = LogLevel::Debug;
         std::string logDir;
@@ -79,8 +79,9 @@ namespace {
 
     void ApplyManifestProvider(const std::string& provider) {
         if (!ManifestClient::SetProvider(provider)) {
-            LOG_WARN("Unknown manifest.url \"{}\", keeping default", provider);
-            ManifestClient::SetProvider("opensteamtool");
+            // 旧配置里的 url = "opensteamtool" 也会走到这里，退回默认的 20770407。
+            LOG_WARN("Unknown manifest.url \"{}\", using default 20770407", provider);
+            ManifestClient::SetProvider("20770407");
         }
     }
 

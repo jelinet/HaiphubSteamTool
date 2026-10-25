@@ -32,6 +32,13 @@ namespace ManifestClient {
         return ParsePlainUint(body.substr(q1 + 1, q2 - q1 - 1), out);
     }
 
+    // 20770407 实测返回纯数字 text/plain（2026-10-26，depot 3602291 / gid 1934813680967622033
+    // → "8589989517436144180"）。SDM 当时 DNS 解析不到，格式未知，先按纯数字、再按 {"content":"..."} 兜底；
+    // 日志会打完整 body，看到真实格式后再收紧。
+    static bool ParsePlainOrContent(std::string_view body, uint64_t* out) {
+        return ParsePlainUint(body, out) || ParseSteamRunJson(body, out);
+    }
+
     // ── provider table ────────────────────────────────────────────
     //
     // Adding a new provider: add one row to kProviders below.
@@ -40,10 +47,12 @@ namespace ManifestClient {
 
     struct Provider {
         std::string_view name;          // matches [manifest] url = "..."
-        const char*      urlTemplate;   // one %llu (gid) — the pre-2026-09-09 shape
-        // Optional depot-aware form: %u app, %u depot, %llu gid. Preferred
-        // whenever the caller knows the depot, and required for correctness —
-        // see kProviders below. nullptr for providers that only speak gid.
+        // gid-only form: one %llu (gid) — the pre-2026-09-09 shape.
+        // nullptr for providers that have no gid-only route (20770407 / SDM answer 404).
+        const char*      urlTemplate;
+        // Optional depot-aware form: %u depot, %llu gid. Preferred whenever the
+        // caller knows the depot, and required for correctness — see kProviders
+        // below. nullptr for providers that only speak gid.
         const char*      urlTemplateEx;
         Parser           parse;
     };
@@ -63,16 +72,22 @@ namespace ManifestClient {
     // that works for ordinary depots. The gid-only template is kept solely as a
     // fallback for when the depot is genuinely unknown, and for the two
     // third-party providers that expose no depot-aware route.
+    //
+    // 2026-10-26：opensteamtool 换成 20770407（使用者要求），并新增 SDM。这两个只有
+    // /manifest/{depot}/{gid} 两段路径（不带 app），没有 gid-only 路径，不知道 depot 时直接失败。
+    // 先讨论过"按列表顺序逐个试、谁通用谁"，使用者最后决定保持单选（[manifest] url 选哪个用哪个）。
     static constexpr Provider kProviders[] = {
-        Make("opensteamtool", "https://manifest.opensteamtool.com/%llu",
-                              "https://manifest.opensteamtool.com/%u/%u/%llu",  ParsePlainUint),
+        Make("20770407",      nullptr,
+                              "https://20770407.xyz/manifest/%u/%llu",           ParsePlainOrContent),
+        Make("SDM",           nullptr,
+                              "https://steamapi.993499094.xyz/manifest/%u/%llu", ParsePlainOrContent),
         Make("wudrm",         "http://gmrc.wudrm.com/manifest/%llu",
-                              nullptr,                                          ParsePlainUint),
+                              nullptr,                                           ParsePlainUint),
         Make("steamrun",      "https://manifest.steam.run/api/manifest/%llu",
-                              nullptr,                                          ParseSteamRunJson),
+                              nullptr,                                           ParseSteamRunJson),
     };
 
-    static const Provider* g_active = &kProviders[0];   // opensteamtool
+    static const Provider* g_active = &kProviders[0];   // 20770407
     static std::mutex      g_mutex;
 
     bool SetProvider(std::string_view name) {
@@ -102,19 +117,26 @@ namespace ManifestClient {
         const Provider& p = *g_active;
         const Config::ManifestTimeouts timeouts = Config::GetManifestTimeouts();
 
-        // app_id does not change the code — it only satisfies Steam's access
-        // check on the named depot — so 0 is a valid value to send and only the
-        // depot has to be right.
-        char urlLog[256];
+        // 当前 provider 的路径只有 depot/gid 两段，app 不进 URL；appId 只用于日志。
+        char url[256];
         const bool depotAware = p.urlTemplateEx && depotId;
-        if (depotAware)
-            std::snprintf(urlLog, sizeof(urlLog), p.urlTemplateEx, appId, depotId, gid);
-        else
-            std::snprintf(urlLog, sizeof(urlLog), p.urlTemplate, gid);
+        if (depotAware) {
+            std::snprintf(url, sizeof(url), p.urlTemplateEx, depotId, gid);
+        } else if (p.urlTemplate) {
+            std::snprintf(url, sizeof(url), p.urlTemplate, gid);
+        } else {
+            // 20770407 / SDM 没有 gid-only 路径；不知道 depot 就没法请求。
+            LOG_MANIFEST_WARN("Manifest name={} needs depot but depot=0, app={} gid={}: not requested",
+                              p.name, appId, gid);
+            return false;
+        }
+
+        LOG_MANIFEST_INFO("Manifest name={} url={} app={} depot={} gid={} shape={}",
+                          p.name, url, appId, depotId, gid, depotAware ? "depot/gid" : "gid-only");
 
         auto r = OSTPlatform::Http::Execute(
             L"GET",
-            urlLog,
+            url,
             nullptr,
             0,
             nullptr,
@@ -123,14 +145,19 @@ namespace ManifestClient {
             timeouts.send,
             timeouts.recv);
 
-        // Log which shape was used: a gid-only request for a non-carrier depot
-        // yields a code the CDN will reject, and that is otherwise invisible
-        // until the download fails.
-        LOG_MANIFEST_INFO("Manifest {} status={} gid={} depot={} shape={}",
-                          p.name, r.status, gid, depotId, depotAware ? "app/depot/gid" : "gid-only");
-
-        if (!r.ok || r.status != 200) return false;
-        return p.parse(r.body, outCode);
+        // 完整打印返回内容（使用者要求，2026-10-26）：SDM 的返回格式还不知道，要从这里看。
+        // shape 也要看：gid-only 请求拿到的 code 对普通 depot 会被 CDN 拒绝，不看日志发现不了。
+        if (!r.ok || r.status != 200) {
+            LOG_MANIFEST_WARN("Manifest name={} failed ok={} status={} body=\"{}\"",
+                              p.name, r.ok, r.status, r.body);
+            return false;
+        }
+        if (!p.parse(r.body, outCode)) {
+            LOG_MANIFEST_WARN("Manifest name={} status=200 but parse failed body=\"{}\"", p.name, r.body);
+            return false;
+        }
+        LOG_MANIFEST_INFO("Manifest name={} ok status=200 body=\"{}\" code={}", p.name, r.body, *outCode);
+        return true;
     }
 
     // ── public ────────────────────────────────────────────────────

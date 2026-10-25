@@ -141,8 +141,8 @@ setStat(1361510, "76561197960287930") -- 使用指定 SteamID 的成就数据用
 level = "info"
 
 [manifest]
-# 仓库 manifest 请求码的上游 API。选项："opensteamtool"、"steamrun"、"wudrm"
-url = "opensteamtool"
+# 仓库 manifest 请求码的上游 API。选项："20770407"（默认）、"SDM"、"steamrun"、"wudrm"
+url = "20770407"
 
 # manifest 请求的 HTTP 超时（毫秒）
 timeout_resolve_ms = 5000

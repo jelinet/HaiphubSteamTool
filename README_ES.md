@@ -134,8 +134,8 @@ El archivo se supervisa mientras Steam está en ejecución; los cambios válidos
 level = "info"
 
 [manifest]
-# API ascendente para los códigos de solicitud de manifiestos de depósito. Opciones: "opensteamtool", "steamrun", "wudrm"
-url = "opensteamtool"
+# API ascendente para los códigos de solicitud de manifiestos de depósito. Opciones: "20770407" (predeterminado), "SDM", "steamrun", "wudrm"
+url = "20770407"
 
 # Tiempos de espera HTTP (timeouts) para las solicitudes de manifiestos (en milisegundos)
 timeout_resolve_ms = 5000

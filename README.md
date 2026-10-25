@@ -151,8 +151,8 @@ The file is watched while Steam is running; valid changes are hot-reloaded witho
 level = "info"
 
 [manifest]
-# Upstream API for depot manifest request codes.  Options: "opensteamtool", "steamrun", "wudrm"
-url = "opensteamtool"
+# Upstream API for depot manifest request codes.  Options: "20770407" (default), "SDM", "steamrun", "wudrm"
+url = "20770407"
 
 # HTTP timeouts for manifest requests (milliseconds)
 timeout_resolve_ms = 5000
