@@ -74,18 +74,18 @@ namespace {
             //加密的appid，缺 AppTicket 时用激活时记下的 cdkey 去服务端换票
             if (isDenuvo) {
                 LOG_MISC_INFO("OnSpawnProcessHit: appid={} is Denuvo protected", appId);
-                std::vector<uint8_t> appticket;
-                const CS::Status s1 = CS::GetAppTicket(appId, appticket);
-                const bool hasAppTicket = (s1 == CS::Status::Ok && !appticket.empty());
+                // std::vector<uint8_t> appticket;
+                // const CS::Status s1 = CS::GetAppTicket(appId, appticket);
+                // const bool hasAppTicket = (s1 == CS::Status::Ok && !appticket.empty());
 
-                std::vector<uint8_t> eticket;
-                const CS::Status s2 = CS::GetETicket(appId, eticket);
-                const bool hasETicket = (s2 == CS::Status::Ok && !eticket.empty());
-                // fmt 不能直接格式化 std::vector，用 spdlog::to_hex（Log.h 已引入 bin_to_hex.h）；
-                // {:snp} = 不加空格、不分行、不带偏移，打成一整串十六进制。
-                LOG_MISC_INFO("OnSpawnProcessHit: get registry appid={} appticket({} bytes)={:snp} eticket({} bytes)={:snp} hasAppTicket={} hasETicket={}",
-                    appId, appticket.size(), spdlog::to_hex(appticket), eticket.size(), spdlog::to_hex(eticket),
-                    hasAppTicket, hasETicket);
+                // std::vector<uint8_t> eticket;
+                // const CS::Status s2 = CS::GetETicket(appId, eticket);
+                // const bool hasETicket = (s2 == CS::Status::Ok && !eticket.empty());
+                // // fmt 不能直接格式化 std::vector，用 spdlog::to_hex（Log.h 已引入 bin_to_hex.h）；
+                // // {:snp} = 不加空格、不分行、不带偏移，打成一整串十六进制。
+                // LOG_MISC_INFO("OnSpawnProcessHit: get registry appid={} appticket({} bytes)={:snp} eticket({} bytes)={:snp} hasAppTicket={} hasETicket={}",
+                //     appId, appticket.size(), spdlog::to_hex(appticket), eticket.size(), spdlog::to_hex(eticket),
+                //     hasAppTicket, hasETicket);
                 // 不再看注册表里有没有票，每次都调接口；接口值和注册表不一样才整套重写，
                 // 比较和写入都在 FetchTicketsByCdkey 里（2026-10-25 和使用者确认）。
                 // 代价：每次启动 Denuvo 游戏都会同步请求一次，服务端慢时会卡启动。
