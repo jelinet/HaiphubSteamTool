@@ -725,6 +725,10 @@ namespace {
 
     // 响应形如 {"code":0,"message":"ok","data":{"tickets":[{"appid":703080,"ticket":{...},"e_ticket":{...}}]}}
     // 在 tickets 数组里找 appid 匹配的元素，把 AppTicket / ETicket / SteamID 写进注册表。
+    // 接口返回的 AppTicket、ETicket 和注册表里的逐字节比较：两张都一样就什么都不写；
+    // 有一张不一样就整套重写（AppTicket + ETicket + SteamID + AppTicketExpTime），
+    // 不单独替换某一张，免得新 AppTicket 配旧 SteamID / 过期时间（2026-10-25 和使用者确认）。
+    // 两种情况都返回 true（接口成功）；接口内容不合法才返回 false。
     bool WriteTicketsFromResponse(std::string_view body, uint32_t wantAppId) {
         namespace CS = OSTPlatform::SteamCredentialStore;
 
@@ -732,13 +736,25 @@ namespace {
         if (item.empty()) return false;   // 数组里没有这个 appid
 
         // ── 命中：取 ticket / e_ticket 子对象 ──
-        std::string eHex;
+        std::string appHex, eHex;
         const std::string_view tObj  = JsonObjectValue(item, "ticket");
         const std::string_view etObj = JsonObjectValue(item, "e_ticket");
 
-        if (!JsonStringIn(etObj, "ticket_hex", eHex)) return false;
-        auto eTicket = HexToBytes(eHex);
-        if (!eTicket) return false;
+        if (!JsonStringIn(tObj,  "ticket_hex", appHex)) return false;
+        if (!JsonStringIn(etObj, "ticket_hex", eHex))   return false;
+        auto appTicket = HexToBytes(appHex);
+        auto eTicket   = HexToBytes(eHex);
+        if (!appTicket || !eTicket) return false;
+
+        // 注册表读不到时 Get* 不改出参，保持空 vector，和接口值比较自然算"不一样"。
+        std::vector<uint8_t> regAppTicket, regETicket;
+        CS::GetAppTicket(wantAppId, regAppTicket);
+        CS::GetETicket(wantAppId, regETicket);
+        const bool appSame = (regAppTicket == *appTicket);
+        const bool eSame   = (regETicket == *eTicket);
+        LOG_REGISTERCDKEY_INFO("CDKey ticket compare appid={} appTicketSame={} eTicketSame={}",
+                               wantAppId, appSame, eSame);
+        if (appSame && eSame) return true;
 
         // 先验 ETicket 再写 AppTicket：ETicket 不合法时两张票都不写，不留半套。
         // AppTicket / SteamID / AppTicketExpTime 的写法和 /appticket 共用，见 WriteAppTicketObject。

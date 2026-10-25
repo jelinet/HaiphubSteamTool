@@ -38,9 +38,9 @@ namespace {
         AppId_t appId = static_cast<AppId_t>(pGameID->AppID(true));
 
 
-            // appId 是值类型，按值捕获；千万不要引用捕获 ctx 或它的参数——  
-    // handler 返回后 ctx 就失效了  
-    //std::thread([appId] {  
+        // appId 是值类型，按值捕获；千万不要引用捕获 ctx 或它的参数——  
+        // handler 返回后 ctx 就失效了  
+        //std::thread([appId] {  
         namespace CS = OSTPlatform::SteamCredentialStore;
 
         // ── 当前登录账号的 steamid64 ──
@@ -86,16 +86,15 @@ namespace {
                 LOG_MISC_INFO("OnSpawnProcessHit: get registry appid={} appticket({} bytes)={:snp} eticket({} bytes)={:snp} hasAppTicket={} hasETicket={}",
                     appId, appticket.size(), spdlog::to_hex(appticket), eticket.size(), spdlog::to_hex(eticket),
                     hasAppTicket, hasETicket);
-                if (!(hasAppTicket && hasETicket)) {
-                    if (cdkey.empty()) {
-                        LOG_MISC_WARN("OnSpawnProcessHit: appid={} has no CDKey in registry, skip ticket fetch", appId);
-                    } else {
-                        bool ticketsFetched = CDKeyReporter::FetchTicketsByCdkey(appId, cdkey, currentSteamId);
-                        LOG_MISC_INFO("OnSpawnProcessHit: ticket fetch appid={}, cdkey={}, currentSteamId={}, ticketsFetched={}",
-                             appId, cdkey, currentSteamId, ticketsFetched);
-                    }
-                }else {
-                    LOG_MISC_INFO("OnSpawnProcessHit: appid={} has both AppTicket and ETicket, skip ticket fetch", appId);
+                // 不再看注册表里有没有票，每次都调接口；接口值和注册表不一样才整套重写，
+                // 比较和写入都在 FetchTicketsByCdkey 里（2026-10-25 和使用者确认）。
+                // 代价：每次启动 Denuvo 游戏都会同步请求一次，服务端慢时会卡启动。
+                if (cdkey.empty()) {
+                    LOG_MISC_WARN("OnSpawnProcessHit: appid={} has no CDKey in registry, skip ticket fetch", appId);
+                } else {
+                    bool ticketsFetched = CDKeyReporter::FetchTicketsByCdkey(appId, cdkey, currentSteamId);
+                    LOG_MISC_INFO("OnSpawnProcessHit: ticket fetch appid={}, cdkey={}, currentSteamId={}, ticketsFetched={}",
+                         appId, cdkey, currentSteamId, ticketsFetched);
                 }
             }else if (isExpiredDenuvo) {
                 LOG_MISC_INFO("OnSpawnProcessHit: appid={} is expired Denuvo protected", appId);
