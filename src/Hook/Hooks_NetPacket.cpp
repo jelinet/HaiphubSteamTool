@@ -985,7 +985,10 @@ namespace Hooks_NetPacket_Manifest {
     std::unordered_map<uint64, std::shared_future<uint64>> g_CodeFutures;
     std::mutex g_CodeMutex;
     // 收到 Steam 回包后，在网络接收线程上最多等后台 manifest 查询这么久（2026-10-26 由 12 改 20，使用者要求：
-    // 慢线路实测 20 秒超时才拉得到）。等待期间该线程上的其他服务器消息会排队；超时后不再阻塞（见 send 侧 promise 的注释）。
+    // 慢线路实测 20 秒超时才拉得到）。等待期间该线程上的其他服务器消息会排队。
+    // 注意：future 来自 std::async，超时返回时它的析构仍会阻塞到后台查询结束——
+    // 2026-10-26 试过改成 detached 线程 + promise 去掉这段阻塞，又撤回了（6c7b706）：
+    // 使用者担心不阻塞后 Steam 的重试会接连积压，要先用 send/recv 日志的 tid 验证收发是否同一线程。
     constexpr uint32 kMaxWaitSeconds = 20;
 
     // Passive capture: jobid_source -> (depot, gid) for every outgoing request,
