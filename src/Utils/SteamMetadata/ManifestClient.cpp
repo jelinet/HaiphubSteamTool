@@ -168,11 +168,10 @@ namespace ManifestClient {
 
     // ── public ────────────────────────────────────────────────────
 
-    bool FetchManifestRequestCode(uint64_t manifestGid, uint64_t* outRequestCode,
-                                  AppId_t appId, AppId_t depotId)
+    // 实际解析逻辑；调用方已持有 g_mutex。拆出来是为了让外层在所有 return 路径上都打结束分割线。
+    static bool ResolveLocked(uint64_t manifestGid, uint64_t* outRequestCode,
+                              AppId_t appId, AppId_t depotId)
     {
-        std::lock_guard<std::mutex> lock(g_mutex);
-
         if (appId && depotId && LuaConfig::HasManifestCodeFuncEx()) {
             if (LuaConfig::CallManifestFetchCodeEx(appId, depotId, manifestGid, outRequestCode)) {
                 LOG_MANIFEST_INFO("Manifest gid={} resolved via fetch_manifest_code_ex", manifestGid);
@@ -207,5 +206,22 @@ namespace ManifestClient {
         }
         LOG_MANIFEST_WARN("Manifest gid={} depot={} all {} providers failed (auto)", manifestGid, depotId, total);
         return false;
+    }
+
+    bool FetchManifestRequestCode(uint64_t manifestGid, uint64_t* outRequestCode,
+                                  AppId_t appId, AppId_t depotId)
+    {
+        // 锁放在分割线外面：多个 depot 同时下载时，一次请求的开始线、各个 try、结束线不会和别的请求交错
+        // （使用者反馈看不出哪行开始哪行结束，2026-10-26）。
+        std::lock_guard<std::mutex> lock(g_mutex);
+        LOG_MANIFEST_INFO("------------ Manifest START app={} depot={} gid={} auto={} ------------",
+                          appId, depotId, manifestGid, Config::GetManifestAuto());
+        const bool ok = ResolveLocked(manifestGid, outRequestCode, appId, depotId);
+        if (ok)
+            LOG_MANIFEST_INFO("------------ Manifest END   gid={} result=OK code={} ------------",
+                              manifestGid, *outRequestCode);
+        else
+            LOG_MANIFEST_WARN("------------ Manifest END   gid={} result=FAILED ------------", manifestGid);
+        return ok;
     }
 }
