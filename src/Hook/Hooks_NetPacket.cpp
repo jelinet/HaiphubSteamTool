@@ -1017,6 +1017,11 @@ namespace Hooks_NetPacket_Manifest {
         const bool haveJob = hdr.ParseFromArray(pHdr, cbHdr) && hdr.has_jobid_source();
         const uint64 jobId = haveJob ? hdr.jobid_source() : 0;
 
+        // 每个请求都打一行（日志自带 tid）：和 HandleRecv 里同一个 jobid 的 tid 对比，验证 Steam
+        // 发请求 / 收回包是否同一线程——同一线程的话，收包线程被卡住时重试也发不出来（2026-10-26 排查用）。
+        LOG_MANIFEST_INFO("GetManifestRequestCode send: jobid={} app={} depot={} gid={}",
+                          jobId, appId, depotId, manifestGid);
+
         // Passive capture: remember this request so HandleRecv can harvest the
         // real code Steam is about to return — every request, not just Lua ones,
         // because a genuine code from any depot the user actually downloads is
@@ -1145,6 +1150,8 @@ namespace Hooks_NetPacket_Manifest {
         }
 
         uint64 jobId = hdr.jobid_target();
+        // 和 send 那行对比 tid（见 HandleSend 的注释）。
+        LOG_MANIFEST_INFO("GetManifestRequestCode recv: jobid={} eresult={}", jobId, hdr.eresult());
 
         // Passive capture: harvest the genuine code from this reply before the
         // injection path below can overwrite the body. Only real successes for a
@@ -1184,7 +1191,14 @@ namespace Hooks_NetPacket_Manifest {
             g_CodeFutures.erase(it); // Always clean up immediately
         }
         // Wait up to kMaxWaitSeconds seconds for the HTTP fetch to complete
+        // 记录在网络线程上实际等了多久：这段时间里该线程上的其他消息（以及同线程的重试发送）都在排队。
+        const auto waitStart = std::chrono::steady_clock::now();
+        LOG_MANIFEST_INFO("GetManifestRequestCode recv: jobid={} waiting for code (max {}s)", jobId, kMaxWaitSeconds);
         auto status = future.wait_for(std::chrono::seconds(kMaxWaitSeconds));
+        const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - waitStart).count();
+        LOG_MANIFEST_INFO("GetManifestRequestCode recv: jobid={} waited {}ms ready={}",
+                          jobId, waitedMs, status == std::future_status::ready);
         if (status != std::future_status::ready) {
             LOG_MANIFEST_WARN("GetManifestRequestCode recv: HTTP timed out for jobid={}", jobId);
             return;
