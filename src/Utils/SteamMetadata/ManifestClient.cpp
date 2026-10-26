@@ -114,10 +114,6 @@ namespace ManifestClient {
 
     // ── fetch ─────────────────────────────────────────────────────
 
-    // auto 模式每个接口的超时：四个阶段加起来 10 秒（2+3+2+3），不读 [manifest] timeout_*
-    // （2026-10-26 和使用者确认）。没选"每阶段各 10 秒"：那样单个接口最坏 40 秒，四个全挂要等 160 秒。
-    static constexpr Config::ManifestTimeouts kAutoTimeouts{2000, 3000, 2000, 3000};
-
     // 用 provider p 请求一次。tryIndex / tryTotal 只用于日志（auto 模式标"第几个"，单选模式传 1/1）。
     static bool FetchFrom(const Provider& p, const Config::ManifestTimeouts& timeouts,
                           size_t tryIndex, size_t tryTotal,
@@ -195,11 +191,18 @@ namespace ManifestClient {
         // auto = true：按 kProviders 的顺序（20770407 → SDM → wudrm → steamrun）逐个试，成功就停。
         // 每次都从第一个开始，不记住上次成功的接口（2026-10-26 和使用者确认）。
         // 每个请求都是只读 GET，换下一个重试不会有副作用。
+        //
+        // 超时：和单选模式一样读 [manifest] timeout_*（2026-10-26 和使用者确认）。
+        // 之前试过写死 2/3/2/3 秒：慢线路上 20770407 连不上（实测要 20 秒才拉到），已放弃。
+        // 也讨论过加总时限，使用者否决：auto 的初衷就是每个接口都试一遍。
+        // 代价：试的时间超过 Hooks_NetPacket 的 kMaxWaitSeconds（20 秒）时，这次拿到的 code 赶不上
+        // Steam 的这个 job，要等 Steam 自己重试；期间 g_mutex 一直被占，其他 depot 的查询排队。
+        const Config::ManifestTimeouts timeouts = Config::GetManifestTimeouts();
         constexpr size_t total = std::size(kProviders);
         for (size_t i = 0; i < total; ++i) {
             // 每个接口之间的分隔线（比 START/END 短，一眼区分层级；使用者要求，2026-10-26）。
             LOG_MANIFEST_INFO("-------------------- [{}/{}] {} --------------------", i + 1, total, kProviders[i].name);
-            if (FetchFrom(kProviders[i], kAutoTimeouts, i + 1, total,
+            if (FetchFrom(kProviders[i], timeouts, i + 1, total,
                           manifestGid, outRequestCode, appId, depotId)) {
                 LOG_MANIFEST_INFO("Manifest gid={} resolved by {} (auto, try {}/{})",
                                   manifestGid, kProviders[i].name, i + 1, total);
