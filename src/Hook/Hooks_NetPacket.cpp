@@ -25,7 +25,6 @@
 #include <deque>
 #include <string>
 #include <future>
-#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -1107,34 +1106,16 @@ namespace Hooks_NetPacket_Manifest {
         // afresh. Answering with a placeholder produced 401 on every CDN and
         // "update canceled : Failed downloading 1 manifests". The code is used
         // and must be genuine.
-        // 用 detached 线程 + promise，不用 std::async（2026-10-26）：std::async 产生的 future，
-        // 最后一个引用析构时会阻塞到任务跑完。HandleRecv 在 Steam 网络接收线程上 wait_for 12 秒超时后
-        // 析构它，网络线程就会被拖到 HTTP 查询结束——auto 模式超时调大时最坏几分钟，Steam 整体卡住。
-        // promise 产生的 future 析构不阻塞，网络线程最多只等 kMaxWaitSeconds。
-        auto promise = std::make_shared<std::promise<uint64>>();
-        std::shared_future<uint64> future = promise->get_future().share();
-        const bool started = OSTPlatform::Thread::StartDetached(
-            [promise, manifestGid, depotId, appId]() -> uint32_t {
+        auto task = std::async(std::launch::async,
+            [manifestGid, depotId, appId]() -> uint64 {
                 uint64 code = 0;
-                // 无论成功、失败还是抛异常都要 set_value：promise 没设值就销毁会变成 broken_promise，
-                // HandleRecv 里 future.get() 会在网络线程上抛异常。
-                try {
-                    ManifestClient::FetchManifestRequestCode(manifestGid, &code, appId, depotId);
-                } catch (...) {
-                    code = 0;
-                }
-                promise->set_value(code);
-                return 0;
+                ManifestClient::FetchManifestRequestCode(manifestGid, &code, appId, depotId);
+                return code;
             });
-        if (!started) {
-            // 线程没起来：lambda 里那份 promise 已随 std::function 销毁，这里持有的 shared_ptr 还在，直接给 0。
-            LOG_MANIFEST_WARN("GetManifestRequestCode send: failed to start fetch thread for jobid={}", jobId);
-            promise->set_value(0);
-        }
 
         {
             std::lock_guard<std::mutex> lock(g_CodeMutex);
-            g_CodeFutures[jobId] = future;
+            g_CodeFutures[jobId] = task.share();
         }
 
         return false; // Don't modify the outgoing request body
