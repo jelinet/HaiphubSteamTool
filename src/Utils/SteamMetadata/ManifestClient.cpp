@@ -198,7 +198,7 @@ namespace ManifestClient {
         constexpr size_t total = std::size(kProviders);
         for (size_t i = 0; i < total; ++i) {
             // 每个接口之间的分隔线（比 START/END 短，一眼区分层级；使用者要求，2026-10-26）。
-            LOG_MANIFEST_INFO("------ [{}/{}] {} ------", i + 1, total, kProviders[i].name);
+            LOG_MANIFEST_INFO("-------------------- [{}/{}] {} --------------------", i + 1, total, kProviders[i].name);
             if (FetchFrom(kProviders[i], kAutoTimeouts, i + 1, total,
                           manifestGid, outRequestCode, appId, depotId)) {
                 LOG_MANIFEST_INFO("Manifest gid={} resolved by {} (auto, try {}/{})",
@@ -216,14 +216,14 @@ namespace ManifestClient {
         // 锁放在分割线外面：多个 depot 同时下载时，一次请求的开始线、各个 try、结束线不会和别的请求交错
         // （使用者反馈看不出哪行开始哪行结束，2026-10-26）。
         std::lock_guard<std::mutex> lock(g_mutex);
-        LOG_MANIFEST_INFO("------------ Manifest START app={} depot={} gid={} auto={} ------------",
+        LOG_MANIFEST_INFO("---------------------------------------- Manifest START app={} depot={} gid={} auto={} ----------------------------------------",
                           appId, depotId, manifestGid, Config::GetManifestAuto());
         const bool ok = ResolveLocked(manifestGid, outRequestCode, appId, depotId);
         if (ok)
-            LOG_MANIFEST_INFO("------------ Manifest END   gid={} result=OK code={} ------------",
+            LOG_MANIFEST_INFO("---------------------------------------- Manifest END   gid={} result=OK code={} ----------------------------------------",
                               manifestGid, *outRequestCode);
         else
-            LOG_MANIFEST_WARN("------------ Manifest END   gid={} result=FAILED ------------", manifestGid);
+            LOG_MANIFEST_WARN("---------------------------------------- Manifest END   gid={} result=FAILED ----------------------------------------", manifestGid);
         return ok;
     }
 }
