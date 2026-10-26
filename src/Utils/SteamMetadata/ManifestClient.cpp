@@ -197,6 +197,8 @@ namespace ManifestClient {
         // 每个请求都是只读 GET，换下一个重试不会有副作用。
         constexpr size_t total = std::size(kProviders);
         for (size_t i = 0; i < total; ++i) {
+            // 每个接口之间的分隔线（比 START/END 短，一眼区分层级；使用者要求，2026-10-26）。
+            LOG_MANIFEST_INFO("------ [{}/{}] {} ------", i + 1, total, kProviders[i].name);
             if (FetchFrom(kProviders[i], kAutoTimeouts, i + 1, total,
                           manifestGid, outRequestCode, appId, depotId)) {
                 LOG_MANIFEST_INFO("Manifest gid={} resolved by {} (auto, try {}/{})",
