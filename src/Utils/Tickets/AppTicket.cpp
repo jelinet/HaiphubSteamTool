@@ -5,7 +5,7 @@
 #include "Utils/Logging/Log.h"
 
 namespace AppTicket {
-    constexpr AppId_t kLocalAppTicketSourceAppId = 480;
+    constexpr AppId_t kLocalAppTicketSourceAppId = 1030300;
     constexpr size_t kSteamIdTicketMinimumSize = 16;
 
     static uint64_t GetSteamIDFromCredentialStore(AppId_t appId) {
