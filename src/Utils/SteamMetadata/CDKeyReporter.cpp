@@ -309,10 +309,12 @@ CheckResponse CheckBeforeActivate(const std::string& key, uint64_t steamId) {
     GetBool(res.body, "isExpiredDenuvo", out.isExpiredDenuvo);
     out.isSteamDrm = false;
     GetBool(res.body, "isSteamDrm", out.isSteamDrm);
+    // "cdk":null 时 GetString 返回 false（值不是以 " 开头），out.cdk 保持空串，和没给这个字段等价。
+    GetString(res.body, "cdk", out.cdk);
 
-    LOG_REGISTERCDKEY_DEBUG("CDKey check key={} eresult={} detail={} error_message={} appid={} apps={} tickets={} isDenuvo={} isExpiredDenuvo={} isSteamDrm={}",
+    LOG_REGISTERCDKEY_DEBUG("CDKey check key={} eresult={} detail={} error_message={} appid={} apps={} tickets={} isDenuvo={} isExpiredDenuvo={} isSteamDrm={} cdk={}",
                        MaskKey(key), out.eresult, out.detail, out.errorMessage, out.appId, out.apps.size(),
-                       out.tickets.size(), out.isDenuvo, out.isExpiredDenuvo, out.isSteamDrm);
+                       out.tickets.size(), out.isDenuvo, out.isExpiredDenuvo, out.isSteamDrm, MaskKey(out.cdk));
     return out;
 }
 

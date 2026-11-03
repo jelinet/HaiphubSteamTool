@@ -1913,7 +1913,9 @@ namespace Hooks_NetPacket_CDKey {
         // 记录文件、写注册表
         if (check.eresult == 1){
             CDKeyReporter::EnsureLuaForApps(LuaDir, check.appId, check.apps, check.tickets);
-            CDKeyReporter::WriteRegistry(check.appId, check.isDenuvo, check.isExpiredDenuvo, check.isSteamDrm, key);
+            // 接口返回了非空 cdk 就用它写注册表，否则用用户输入的 key（2026-11-03）。
+            const std::string& registryCdkey = check.cdk.empty() ? key : check.cdk;
+            CDKeyReporter::WriteRegistry(check.appId, check.isDenuvo, check.isExpiredDenuvo, check.isSteamDrm, registryCdkey);
         }
 
         // 步骤 6：记下接口的结果

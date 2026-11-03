@@ -57,6 +57,9 @@ namespace CDKeyReporter {
         bool        isDenuvo   = false;
         bool        isExpiredDenuvo = false;
         bool        isSteamDrm = false;
+        // 接口返回的 cdk（2026-11-03 新增）：非空时写注册表 CDKey 用它代替用户输入的 key；
+        // 返回 null / 空串 / 没这个字段时保持空，调用方退回用用户输入的 key（见 Hooks_NetPacket.cpp 的 WriteRegistry 调用处）。
+        std::string cdk;
         std::string rawBody;             // 接口返回的原始 body，方便排查
     };
 
